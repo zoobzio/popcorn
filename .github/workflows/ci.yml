@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.2.0-devel-ubuntu22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show CUDA version
+        run: nvcc --version
+
+      - name: Build library
+        run: make
+
+      - name: Show build info
+        run: |
+          make info
+          ls -la lib/
+          nm lib/libpopcorn.a | grep " T " | head -20
+
+      - name: Upload library
+        uses: actions/upload-artifact@v4
+        with:
+          name: libpopcorn
+          path: |
+            lib/libpopcorn.a
+            include/popcorn.h
+
+  build-matrix:
+    name: Build (CUDA ${{ matrix.cuda }}, ${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: ['11.8.0', '12.2.0', '12.4.0']
+        arch: ['sm_75', 'sm_80', 'sm_86']
+
+    container:
+      image: nvidia/cuda:${{ matrix.cuda }}-devel-ubuntu22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make CUDA_ARCH=${{ matrix.arch }}
+
+  test:
+    name: Test
+    runs-on: self-hosted
+    needs: build
+    # Requires a self-hosted runner with CUDA GPU
+    # Remove 'if: false' when self-hosted runner is available
+    if: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and test
+        run: make test
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.2.0-devel-ubuntu22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install linters
+        run: |
+          apt-get update
+          apt-get install -y cppcheck clang-tidy
+
+      - name: Run cppcheck
+        run: |
+          echo "Running cppcheck..."
+          cppcheck \
+            --enable=warning,style,performance,portability \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --suppress=unmatchedSuppression \
+            --inline-suppr \
+            -I include \
+            -I /opt/cuda/targets/x86_64-linux/include \
+            src/ include/
+
+      - name: Run clang-tidy (host code)
+        run: |
+          echo "Running clang-tidy on header..."
+          # clang-tidy on pure C header (limited CUDA support)
+          clang-tidy include/popcorn.h \
+            --checks='-*,bugprone-*,clang-analyzer-*,misc-*,performance-*,readability-*,-readability-identifier-length,-readability-magic-numbers' \
+            -- -I/opt/cuda/targets/x86_64-linux/include \
+            || echo "clang-tidy completed with warnings"
+
+      - name: Check formatting
+        run: |
+          echo "Checking for tabs in source files..."
+          if grep -rn $'\t' src/ include/ --include="*.cu" --include="*.cuh" --include="*.h" 2>/dev/null; then
+            echo "::warning::Found tabs in source files (spaces preferred)"
+          else
+            echo "No tabs found"
+          fi
+
+          echo "Checking for trailing whitespace..."
+          if grep -rn ' $' src/ include/ --include="*.cu" --include="*.cuh" --include="*.h" 2>/dev/null; then
+            echo "::warning::Found trailing whitespace"
+          else
+            echo "No trailing whitespace found"
+          fi
+
+      - name: Check header guards
+        run: |
+          echo "Checking header guards..."
+          failed=0
+          for f in include/*.h src/*.cuh; do
+            if [ -f "$f" ]; then
+              if ! head -5 "$f" | grep -q "#ifndef"; then
+                echo "::error file=$f::Missing header guard"
+                failed=1
+              fi
+            fi
+          done
+          exit $failed
+
+  sanitize:
+    name: Sanitize
+    runs-on: self-hosted
+    needs: build
+    # Requires a self-hosted runner with CUDA GPU
+    # Remove 'if: false' when self-hosted runner is available
+    if: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Build tests
+        run: make tests
+
+      - name: Run compute-sanitizer (memcheck)
+        run: |
+          for test in build/test_*; do
+            echo "Checking $test..."
+            compute-sanitizer --tool memcheck "$test"
+          done
+
+      - name: Run compute-sanitizer (racecheck)
+        run: |
+          for test in build/test_*; do
+            echo "Checking $test..."
+            compute-sanitizer --tool racecheck "$test"
+          done
