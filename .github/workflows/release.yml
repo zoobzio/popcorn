@@ -27,6 +27,9 @@ jobs:
           - cuda: '12.2.0'
             arch: 'sm_89'
             suffix: 'ada'
+          - cuda: '12.2.0'
+            arch: 'fat'
+            suffix: 'universal'
 
     container:
       image: nvidia/cuda:${{ matrix.cuda }}-devel-ubuntu22.04
@@ -36,7 +39,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build
-        run: make CUDA_ARCH=${{ matrix.arch }}
+        run: |
+          if [ "${{ matrix.arch }}" = "fat" ]; then
+            make fat
+          else
+            make CUDA_ARCH=${{ matrix.arch }}
+          fi
 
       - name: Package
         run: |
@@ -101,6 +109,7 @@ jobs:
 
             | Archive | GPU Architecture |
             |---------|------------------|
+            | `popcorn-${{ github.ref_name }}-universal.tar.gz` | **All supported GPUs** (recommended) |
             | `popcorn-${{ github.ref_name }}-turing.tar.gz` | Turing (RTX 20xx, GTX 16xx) |
             | `popcorn-${{ github.ref_name }}-ampere.tar.gz` | Ampere (RTX 30xx, A100) |
             | `popcorn-${{ github.ref_name }}-ga102.tar.gz` | GA102 (RTX 3080, 3090) |
@@ -113,3 +122,176 @@ jobs:
             ```bash
             sha256sum -c SHA256SUMS.txt
             ```
+
+  aur-popcorn:
+    name: Publish AUR (popcorn)
+    runs-on: ubuntu-latest
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Generate PKGBUILD
+        env:
+          PKGVER: ${{ steps.version.outputs.version }}
+        run: |
+          # Fetch source tarball checksum
+          CHECKSUM=$(curl -sL "https://github.com/zoobzio/popcorn/archive/${{ github.ref_name }}.tar.gz" | sha256sum | cut -d' ' -f1)
+
+          cat > PKGBUILD << EOF
+# Maintainer: zoobzio <zoobzio@users.noreply.github.com>
+pkgname=popcorn
+pkgver=${PKGVER}
+pkgrel=1
+pkgdesc="High-performance CUDA kernels for elementwise tensor operations"
+arch=('x86_64')
+url="https://github.com/zoobzio/popcorn"
+license=('MIT')
+depends=('cuda')
+source=("\$pkgname-\$pkgver.tar.gz::https://github.com/zoobzio/popcorn/archive/v\$pkgver.tar.gz")
+sha256sums=('${CHECKSUM}')
+
+build() {
+    cd "\$pkgname-\$pkgver"
+    make fat
+}
+
+package() {
+    cd "\$pkgname-\$pkgver"
+    install -Dm644 lib/libpopcorn.a "\$pkgdir/usr/lib/libpopcorn.a"
+    install -Dm644 include/popcorn.h "\$pkgdir/usr/include/popcorn.h"
+    install -Dm644 LICENSE "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE"
+}
+EOF
+
+          cat PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: popcorn
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
+
+  aur-popcorn-bin:
+    name: Publish AUR (popcorn-bin)
+    runs-on: ubuntu-latest
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Generate PKGBUILD
+        env:
+          PKGVER: ${{ steps.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Fetch universal binary checksum
+          CHECKSUM=$(curl -sL "https://github.com/zoobzio/popcorn/releases/download/${TAG}/popcorn-${TAG}-universal.tar.gz" | sha256sum | cut -d' ' -f1)
+
+          cat > PKGBUILD << EOF
+# Maintainer: zoobzio <zoobzio@users.noreply.github.com>
+pkgname=popcorn-bin
+pkgver=${PKGVER}
+pkgrel=1
+pkgdesc="High-performance CUDA kernels for elementwise tensor operations (precompiled)"
+arch=('x86_64')
+url="https://github.com/zoobzio/popcorn"
+license=('MIT')
+depends=('cuda')
+provides=('popcorn')
+conflicts=('popcorn' 'popcorn-git')
+source=("popcorn-\$pkgver-universal.tar.gz::https://github.com/zoobzio/popcorn/releases/download/v\$pkgver/popcorn-v\$pkgver-universal.tar.gz")
+sha256sums=('${CHECKSUM}')
+
+package() {
+    install -Dm644 lib/libpopcorn.a "\$pkgdir/usr/lib/libpopcorn.a"
+    install -Dm644 include/popcorn.h "\$pkgdir/usr/include/popcorn.h"
+    install -Dm644 LICENSE "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE"
+}
+EOF
+
+          cat PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: popcorn-bin
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
+
+  aur-popcorn-git:
+    name: Publish AUR (popcorn-git)
+    runs-on: ubuntu-latest
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate PKGBUILD
+        run: |
+          cat > PKGBUILD << 'EOF'
+# Maintainer: zoobzio <zoobzio@users.noreply.github.com>
+pkgname=popcorn-git
+pkgver=r1
+pkgrel=1
+pkgdesc="High-performance CUDA kernels for elementwise tensor operations (git version)"
+arch=('x86_64')
+url="https://github.com/zoobzio/popcorn"
+license=('MIT')
+depends=('cuda')
+makedepends=('git')
+provides=('popcorn')
+conflicts=('popcorn' 'popcorn-bin')
+source=("git+https://github.com/zoobzio/popcorn.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd popcorn
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd popcorn
+    make fat
+}
+
+package() {
+    cd popcorn
+    install -Dm644 lib/libpopcorn.a "$pkgdir/usr/lib/libpopcorn.a"
+    install -Dm644 include/popcorn.h "$pkgdir/usr/include/popcorn.h"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+EOF
+
+          cat PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: popcorn-git
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"

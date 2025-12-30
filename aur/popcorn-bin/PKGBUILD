@@ -1,0 +1,19 @@
+# Maintainer: zoobzio <zoobzio@users.noreply.github.com>
+pkgname=popcorn-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="High-performance CUDA kernels for elementwise tensor operations (precompiled)"
+arch=('x86_64')
+url="https://github.com/zoobzio/popcorn"
+license=('MIT')
+depends=('cuda')
+provides=('popcorn')
+conflicts=('popcorn' 'popcorn-git')
+source=("popcorn-$pkgver-universal.tar.gz::https://github.com/zoobzio/popcorn/releases/download/v$pkgver/popcorn-v$pkgver-universal.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    install -Dm644 lib/libpopcorn.a "$pkgdir/usr/lib/libpopcorn.a"
+    install -Dm644 include/popcorn.h "$pkgdir/usr/include/popcorn.h"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

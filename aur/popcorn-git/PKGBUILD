@@ -1,0 +1,31 @@
+# Maintainer: zoobzio <zoobzio@users.noreply.github.com>
+pkgname=popcorn-git
+pkgver=r4.fb96c96
+pkgrel=1
+pkgdesc="High-performance CUDA kernels for elementwise tensor operations (git version)"
+arch=('x86_64')
+url="https://github.com/zoobzio/popcorn"
+license=('MIT')
+depends=('cuda')
+makedepends=('git')
+provides=('popcorn')
+conflicts=('popcorn' 'popcorn-bin')
+source=("git+https://github.com/zoobzio/popcorn.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd popcorn
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd popcorn
+    make fat
+}
+
+package() {
+    cd popcorn
+    install -Dm644 lib/libpopcorn.a "$pkgdir/usr/lib/libpopcorn.a"
+    install -Dm644 include/popcorn.h "$pkgdir/usr/include/popcorn.h"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
