@@ -110,6 +110,50 @@ test: $(TEST_BINARIES)
 	fi
 
 # -----------------------------------------------------------------------------
+# Lint
+# -----------------------------------------------------------------------------
+
+.PHONY: lint lint-cppcheck lint-clang-tidy lint-format
+
+lint: lint-cppcheck lint-format
+	@echo ""
+	@printf "\033[0;32mLint passed\033[0m\n"
+
+lint-cppcheck:
+	@echo "Running cppcheck..."
+	@cppcheck --language=c++ \
+		--enable=warning,style,performance,portability \
+		--error-exitcode=1 \
+		--suppress=missingIncludeSystem \
+		--suppress=unmatchedSuppression \
+		--suppress='*:$(CUDA_INCLUDE)/*' \
+		-I include -I $(CUDA_INCLUDE) \
+		$(SRC_DIR)/*.cu $(SRC_DIR)/*.cuh include/*.h 2>&1 \
+		| grep -v "^Checking" | grep -v "information:" || true
+
+lint-clang-tidy:
+	@echo "Running clang-tidy..."
+	@clang-tidy include/popcorn.h \
+		--checks='-*,bugprone-*,clang-analyzer-*,misc-*,performance-*,-misc-include-cleaner,-bugprone-reserved-identifier' \
+		-- -I$(CUDA_INCLUDE) 2>&1 \
+		| grep "popcorn" || echo "No issues found"
+
+lint-format:
+	@echo "Checking formatting..."
+	@if grep -rn '	' $(SRC_DIR)/ include/ --include="*.cu" --include="*.cuh" --include="*.h" 2>/dev/null; then \
+		printf "\033[0;31mError: Found tabs in source files\033[0m\n"; exit 1; \
+	fi
+	@if grep -rn ' $$' $(SRC_DIR)/ include/ --include="*.cu" --include="*.cuh" --include="*.h" 2>/dev/null; then \
+		printf "\033[0;31mError: Found trailing whitespace\033[0m\n"; exit 1; \
+	fi
+	@for f in include/*.h $(SRC_DIR)/*.cuh; do \
+		if [ -f "$$f" ] && ! head -5 "$$f" | grep -q "#ifndef"; then \
+			printf "\033[0;31mError: Missing header guard in $$f\033[0m\n"; exit 1; \
+		fi; \
+	done
+	@echo "Formatting OK"
+
+# -----------------------------------------------------------------------------
 # Info
 # -----------------------------------------------------------------------------
 

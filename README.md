@@ -24,6 +24,9 @@ This library fills that gap with a clean C API designed for integration via cgo.
 | **Binary** | `Add`, `Sub`, `Mul`, `Div`, `Pow` |
 | **Scalar** | `AddScalar`, `SubScalar`, `MulScalar`, `DivScalar`, `PowScalar` |
 | **Selection** | `Clamp`, `Where` |
+| **Indexing** | `Gather` |
+| **Reduction** | `ArgMax`, `ArgMin` |
+| **Normalization** | `LayerNorm` |
 
 All operations support float32 and operate on contiguous memory. Broadcasting is handled at the consumer layer.
 
@@ -150,6 +153,31 @@ popcornStatus_t popcornPowScalar_f32(float* out, const float* in, float scalar, 
 ```c
 popcornStatus_t popcornClamp_f32(float* out, const float* in, float minVal, float maxVal, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornWhere_f32(float* out, const float* cond, const float* a, const float* b, int64_t n, cudaStream_t stream);
+```
+
+### Indexing Operations
+
+```c
+// Gather: out[i] = in[i * stride + idx[i]]
+popcornStatus_t popcornGather_f32(float* out, const float* in, const int64_t* idx, int64_t n, int64_t stride, cudaStream_t stream);
+```
+
+### Reduction Operations
+
+```c
+// ArgMax: out[i] = argmax(in[i*stride : i*stride+stride])
+popcornStatus_t popcornArgMax_f32(int64_t* out, const float* in, int64_t n, int64_t stride, cudaStream_t stream);
+
+// ArgMin: out[i] = argmin(in[i*stride : i*stride+stride])
+popcornStatus_t popcornArgMin_f32(int64_t* out, const float* in, int64_t n, int64_t stride, cudaStream_t stream);
+```
+
+### Normalization Operations
+
+```c
+// LayerNorm: out = (in - mean) / sqrt(var + eps) * weight + bias
+// weight and bias are optional (pass NULL to skip)
+popcornStatus_t popcornLayerNorm_f32(float* out, const float* in, const float* weight, const float* bias, int64_t n, int64_t norm_size, float eps, cudaStream_t stream);
 ```
 
 ## Contributing

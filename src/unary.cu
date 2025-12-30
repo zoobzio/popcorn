@@ -59,7 +59,7 @@ struct GeluOp {
 
 struct LeakyReluOp {
     float alpha;
-    __device__ LeakyReluOp(float a) : alpha(a) {}
+    __device__ explicit LeakyReluOp(float a) : alpha(a) {}
     __device__ float operator()(float x) const {
         return x > 0.0f ? x : alpha * x;
     }

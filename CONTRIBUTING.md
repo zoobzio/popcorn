@@ -58,6 +58,7 @@ src/
   common.cuh     # Shared utilities, constants
   unary.cu       # Unary operations
   binary.cu      # Binary operations
+  reduction.cu   # Gather, ArgMax/ArgMin, LayerNorm
 include/
   popcorn.h      # Public C API (extern "C")
 test/
