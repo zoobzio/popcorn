@@ -11,6 +11,11 @@ NVCC = nvcc
 NVCC_FLAGS = -std=c++17 -O3 --compiler-options -fPIC
 NVCC_FLAGS += -I$(CUDA_INCLUDE) -Iinclude -Isrc
 
+# Stricter warnings
+NVCC_FLAGS += --Wextra-cross-execution-space-call
+NVCC_FLAGS += --Wreorder
+NVCC_FLAGS += --compiler-options -Wall,-Wextra,-Wno-unused-parameter
+
 # Target architecture - adjust for your GPU
 # Common options: sm_75 (Turing), sm_80 (Ampere), sm_86 (GA102), sm_89 (Ada)
 CUDA_ARCH ?= sm_80
@@ -71,7 +76,10 @@ $(FAT_BUILD_DIR):
 	mkdir -p $@
 
 $(FAT_BUILD_DIR)/%.o: $(SRC_DIR)/%.cu | $(FAT_BUILD_DIR)
-	$(NVCC) -std=c++17 -O3 --compiler-options -fPIC -I$(CUDA_INCLUDE) -Iinclude -Isrc $(FAT_ARCHS) -c $< -o $@
+	$(NVCC) -std=c++17 -O3 --compiler-options -fPIC -I$(CUDA_INCLUDE) -Iinclude -Isrc \
+		--Wextra-cross-execution-space-call --Wreorder \
+		--compiler-options -Wall,-Wextra,-Wno-unused-parameter \
+		$(FAT_ARCHS) -c $< -o $@
 
 # Build fat binary (all architectures)
 fat: $(FAT_OBJECTS) | $(LIB_DIR)
@@ -120,15 +128,15 @@ lint: lint-cppcheck lint-format
 	@printf "\033[0;32mLint passed\033[0m\n"
 
 lint-cppcheck:
-	@echo "Running cppcheck..."
-	@cppcheck --language=c++ \
+	@echo "Running cppcheck on headers..."
+	@cppcheck \
 		--enable=warning,style,performance,portability \
 		--error-exitcode=1 \
 		--suppress=missingIncludeSystem \
 		--suppress=unmatchedSuppression \
-		--suppress='*:$(CUDA_INCLUDE)/*' \
+		--suppress=*:$(CUDA_INCLUDE)/* \
 		-I include -I $(CUDA_INCLUDE) \
-		$(SRC_DIR)/*.cu $(SRC_DIR)/*.cuh include/*.h 2>&1 \
+		include/*.h 2>&1 \
 		| grep -v "^Checking" | grep -v "information:" || true
 
 lint-clang-tidy:

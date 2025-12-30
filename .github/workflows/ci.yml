@@ -88,7 +88,7 @@ jobs:
 
       - name: Run cppcheck
         run: |
-          echo "Running cppcheck..."
+          echo "Running cppcheck on headers..."
           cppcheck \
             --enable=warning,style,performance,portability \
             --error-exitcode=1 \
@@ -97,7 +97,7 @@ jobs:
             --inline-suppr \
             -I include \
             -I /opt/cuda/targets/x86_64-linux/include \
-            src/ include/
+            include/*.h
 
       - name: Run clang-tidy (host code)
         run: |
