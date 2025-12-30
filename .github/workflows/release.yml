@@ -113,22 +113,3 @@ jobs:
             ```bash
             sha256sum -c SHA256SUMS.txt
             ```
-
-  notify:
-    name: Post-release
-    runs-on: ubuntu-latest
-    needs: release
-
-    steps:
-      - name: Create post-release issue
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const version = '${{ github.ref_name }}';
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Release ${version} post-release checklist`,
-              body: `## Post-release checklist for ${version}\n\n- [ ] Update tendo to use new version\n- [ ] Test integration in tendo\n- [ ] Update documentation if needed\n- [ ] Announce release if significant`,
-              labels: ['release']
-            });

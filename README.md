@@ -1,11 +1,10 @@
 # popcorn
 
 [![CI](https://github.com/zoobzio/popcorn/actions/workflows/ci.yml/badge.svg)](https://github.com/zoobzio/popcorn/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/zoobzio/popcorn/actions/workflows/codeql.yml/badge.svg)](https://github.com/zoobzio/popcorn/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/zoobzio/popcorn)](https://github.com/zoobzio/popcorn/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CUDA](https://img.shields.io/badge/CUDA-11.0+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 CUDA elementwise kernels for [tendo](https://github.com/zoobzio/tendo).
 
@@ -17,16 +16,16 @@ This library fills that gap with a clean C API designed for integration via cgo.
 
 ## Operations
 
-| Category | Functions |
-|----------|-----------|
-| **Unary** | `Neg`, `Abs`, `Exp`, `Log`, `Sqrt`, `Square`, `Sign` |
-| **Activations** | `GELU`, `LeakyReLU` |
-| **Binary** | `Add`, `Sub`, `Mul`, `Div`, `Pow` |
-| **Scalar** | `AddScalar`, `SubScalar`, `MulScalar`, `DivScalar`, `PowScalar` |
-| **Selection** | `Clamp`, `Where` |
-| **Indexing** | `Gather` |
-| **Reduction** | `ArgMax`, `ArgMin` |
-| **Normalization** | `LayerNorm` |
+| Category          | Functions                                                       |
+| ----------------- | --------------------------------------------------------------- |
+| **Unary**         | `Neg`, `Abs`, `Exp`, `Log`, `Sqrt`, `Square`, `Sign`            |
+| **Activations**   | `GELU`, `LeakyReLU`                                             |
+| **Binary**        | `Add`, `Sub`, `Mul`, `Div`, `Pow`                               |
+| **Scalar**        | `AddScalar`, `SubScalar`, `MulScalar`, `DivScalar`, `PowScalar` |
+| **Selection**     | `Clamp`, `Where`                                                |
+| **Indexing**      | `Gather`                                                        |
+| **Reduction**     | `ArgMax`, `ArgMin`                                              |
+| **Normalization** | `LayerNorm`                                                     |
 
 All operations support float32 and operate on contiguous memory. Broadcasting is handled at the consumer layer.
 
