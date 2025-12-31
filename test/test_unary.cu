@@ -300,6 +300,56 @@ TEST(neg_inplace) {
 }
 
 // -----------------------------------------------------------------------------
+// Sin
+// -----------------------------------------------------------------------------
+
+TEST(sin_basic) {
+    float input[] = {0.0f, 3.14159265f / 2.0f, 3.14159265f, -3.14159265f / 2.0f};
+    int n = 4;
+
+    float* d_in = to_device(input, n);
+    float* d_out = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornSin_f32(d_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_out, n);
+    for (int i = 0; i < n; i++) {
+        ASSERT_NEAR(result[i], sinf(input[i]), TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_out);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Cos
+// -----------------------------------------------------------------------------
+
+TEST(cos_basic) {
+    float input[] = {0.0f, 3.14159265f / 2.0f, 3.14159265f, -3.14159265f / 2.0f};
+    int n = 4;
+
+    float* d_in = to_device(input, n);
+    float* d_out = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornCos_f32(d_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_out, n);
+    for (int i = 0; i < n; i++) {
+        ASSERT_NEAR(result[i], cosf(input[i]), TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_out);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------------
 
@@ -318,6 +368,8 @@ int main() {
     RUN_TEST(leaky_relu_basic);
     RUN_TEST(exp_large);
     RUN_TEST(neg_inplace);
+    RUN_TEST(sin_basic);
+    RUN_TEST(cos_basic);
 
     return test_summary("Unary");
 }

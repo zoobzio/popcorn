@@ -18,6 +18,14 @@ typedef enum {
 // Get error string for status code
 const char* popcornGetErrorString(popcornStatus_t status);
 
+// Get the underlying CUDA error from the last POPCORN_ERROR_CUDA return
+// Returns cudaSuccess if no CUDA error has occurred
+cudaError_t popcornGetLastCudaError(void);
+
+// Get the CUDA error string for the last CUDA error
+// More detailed than popcornGetErrorString for CUDA errors
+const char* popcornGetLastCudaErrorString(void);
+
 // -----------------------------------------------------------------------------
 // Unary Elementwise Operations
 // All operations: out[i] = f(in[i]) for i in [0, n)
@@ -30,6 +38,8 @@ popcornStatus_t popcornLog_f32(float* out, const float* in, int64_t n, cudaStrea
 popcornStatus_t popcornSqrt_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornSquare_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornSign_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
+popcornStatus_t popcornSin_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
+popcornStatus_t popcornCos_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 
 // Activations not covered by cuDNN
 popcornStatus_t popcornGelu_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
@@ -118,6 +128,164 @@ popcornStatus_t popcornLayerNorm_f32(
     int64_t n,            // batch size (product of all dims except normalized)
     int64_t norm_size,    // size of normalized dimension(s)
     float eps,            // epsilon for numerical stability (typically 1e-5)
+    cudaStream_t stream
+);
+
+// Layer normalization with statistics output for backward pass
+// Same as popcornLayerNorm_f32 but optionally outputs mean and invstd
+popcornStatus_t popcornLayerNormWithStats_f32(
+    float* out,           // [n, norm_size] output
+    float* out_mean,      // [n] mean per row (nullable to skip)
+    float* out_invstd,    // [n] inverse std per row (nullable to skip)
+    const float* in,      // [n, norm_size] input
+    const float* weight,  // [norm_size] scale (gamma), nullable for no scaling
+    const float* bias,    // [norm_size] shift (beta), nullable for no shift
+    int64_t n,            // batch size
+    int64_t norm_size,    // size of normalized dimension(s)
+    float eps,            // epsilon for numerical stability
+    cudaStream_t stream
+);
+
+// -----------------------------------------------------------------------------
+// Tensor Operations
+// -----------------------------------------------------------------------------
+
+// Embedding lookup: out[i] = weight[indices[i]]
+// Retrieves embedding vectors for given token indices
+popcornStatus_t popcornEmbedding_f32(
+    float* out,               // [n, embed_dim] output embeddings
+    const float* weight,      // [vocab_size, embed_dim] embedding table
+    const int64_t* indices,   // [n] token indices (must be in range [0, vocab_size))
+    int64_t n,                // number of tokens
+    int64_t embed_dim,        // embedding dimension
+    int64_t vocab_size,       // vocabulary size (for bounds checking in debug builds)
+    cudaStream_t stream
+);
+
+// Concatenate tensors along an existing dimension
+// Layout is [outer_size, cat_dim, inner_size] where cat_dim varies per input
+popcornStatus_t popcornCat_f32(
+    float* out,                   // output buffer
+    const float* const* inputs,   // array of input tensor pointers
+    int64_t num_inputs,           // number of tensors to concatenate
+    const int64_t* sizes,         // [num_inputs] size along cat dim for each input
+    int64_t outer_size,           // product of dims before cat dim
+    int64_t inner_size,           // product of dims after cat dim
+    cudaStream_t stream
+);
+
+// Stack tensors along a new first dimension
+// out[i, ...] = inputs[i][...]
+popcornStatus_t popcornStack_f32(
+    float* out,                   // [num_inputs, tensor_size] output
+    const float* const* inputs,   // array of input tensor pointers
+    int64_t num_inputs,           // number of tensors to stack
+    int64_t tensor_size,          // elements per input tensor
+    cudaStream_t stream
+);
+
+// Lower triangular mask: zeros out elements above diagonal + k
+// out[row, col] = in[row, col] if col <= row + k, else 0
+// k=0: main diagonal, k<0: below main, k>0: above main
+popcornStatus_t popcornTril_f32(
+    float* out,                   // [rows, cols] output
+    const float* in,              // [rows, cols] input
+    int64_t rows,
+    int64_t cols,
+    int64_t k,                    // diagonal offset
+    cudaStream_t stream
+);
+
+// -----------------------------------------------------------------------------
+// Backward Pass Operations (for autograd)
+// -----------------------------------------------------------------------------
+
+// GELU backward: grad_in = grad_out * gelu'(in)
+popcornStatus_t popcornGeluBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* in,          // [n] saved input from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// LeakyReLU backward: grad_in = grad_out * (in > 0 ? 1 : alpha)
+popcornStatus_t popcornLeakyReluBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* in,          // [n] saved input from forward
+    float alpha,
+    int64_t n,
+    cudaStream_t stream
+);
+
+// LayerNorm backward: computes grad_input, grad_weight, grad_bias
+// Requires saved mean and inverse std from forward pass
+popcornStatus_t popcornLayerNormBackward_f32(
+    float* grad_in,           // [n, norm_size] output gradient for input
+    float* grad_weight,       // [norm_size] output gradient for weight (nullable)
+    float* grad_bias,         // [norm_size] output gradient for bias (nullable)
+    const float* grad_out,    // [n, norm_size] incoming gradient
+    const float* in,          // [n, norm_size] saved input from forward
+    const float* mean,        // [n] saved mean from forward
+    const float* invstd,      // [n] saved inverse std from forward
+    const float* weight,      // [norm_size] weight (nullable)
+    int64_t n,                // batch size
+    int64_t norm_size,        // normalization dimension size
+    cudaStream_t stream
+);
+
+// Embedding backward: accumulates gradients into embedding table
+// grad_weight[indices[i]] += grad_out[i]
+popcornStatus_t popcornEmbeddingBackward_f32(
+    float* grad_weight,       // [vocab_size, embed_dim] output gradient (zeroed then accumulated)
+    const float* grad_out,    // [n, embed_dim] incoming gradient
+    const int64_t* indices,   // [n] token indices from forward
+    int64_t n,                // number of tokens
+    int64_t embed_dim,        // embedding dimension
+    int64_t vocab_size,       // vocabulary size
+    cudaStream_t stream
+);
+
+// Scatter: write values to indexed positions
+// out[i * stride + idx[i]] = in[i]
+popcornStatus_t popcornScatter_f32(
+    float* out,               // [n, stride] output tensor
+    const float* in,          // [n] input values
+    const int64_t* idx,       // [n] indices
+    int64_t n,                // number of elements
+    int64_t stride,           // inner dimension size
+    cudaStream_t stream
+);
+
+// ScatterAdd: accumulate values at indexed positions (for Gather backward)
+// out[i * stride + idx[i]] += in[i]
+popcornStatus_t popcornScatterAdd_f32(
+    float* out,               // [n, stride] output tensor (accumulated into)
+    const float* in,          // [n] input values
+    const int64_t* idx,       // [n] indices
+    int64_t n,                // number of elements
+    int64_t stride,           // inner dimension size
+    cudaStream_t stream
+);
+
+// Split: inverse of Cat, splits tensor into multiple outputs
+popcornStatus_t popcornSplit_f32(
+    float* const* outputs,    // array of output tensor pointers
+    int64_t num_outputs,      // number of output tensors
+    const int64_t* sizes,     // [num_outputs] size along split dim for each output
+    const float* in,          // input tensor
+    int64_t outer_size,       // product of dims before split dim
+    int64_t inner_size,       // product of dims after split dim
+    cudaStream_t stream
+);
+
+// Unstack: inverse of Stack, splits into individual tensors
+popcornStatus_t popcornUnstack_f32(
+    float* const* outputs,    // array of output tensor pointers
+    const float* in,          // [num_outputs, tensor_size] input
+    int64_t num_outputs,      // number of output tensors
+    int64_t tensor_size,      // elements per output tensor
     cudaStream_t stream
 );
 

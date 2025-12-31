@@ -18,14 +18,16 @@ This library fills that gap with a clean C API designed for integration via cgo.
 
 | Category          | Functions                                                       |
 | ----------------- | --------------------------------------------------------------- |
-| **Unary**         | `Neg`, `Abs`, `Exp`, `Log`, `Sqrt`, `Square`, `Sign`            |
+| **Unary**         | `Neg`, `Abs`, `Exp`, `Log`, `Sqrt`, `Square`, `Sign`, `Sin`, `Cos` |
 | **Activations**   | `GELU`, `LeakyReLU`                                             |
 | **Binary**        | `Add`, `Sub`, `Mul`, `Div`, `Pow`                               |
 | **Scalar**        | `AddScalar`, `SubScalar`, `MulScalar`, `DivScalar`, `PowScalar` |
 | **Selection**     | `Clamp`, `Where`                                                |
-| **Indexing**      | `Gather`                                                        |
+| **Indexing**      | `Gather`, `Scatter`, `ScatterAdd`                               |
 | **Reduction**     | `ArgMax`, `ArgMin`                                              |
 | **Normalization** | `LayerNorm`                                                     |
+| **Tensor**        | `Embedding`, `Cat`, `Stack`, `Tril`, `Split`, `Unstack`         |
+| **Backward**      | `GeluBackward`, `LeakyReluBackward`, `LayerNormBackward`, `EmbeddingBackward` |
 
 All operations support float32 and operate on contiguous memory. Broadcasting is handled at the consumer layer.
 
@@ -123,6 +125,8 @@ popcornStatus_t popcornLog_f32(float* out, const float* in, int64_t n, cudaStrea
 popcornStatus_t popcornSqrt_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornSquare_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornSign_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
+popcornStatus_t popcornSin_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
+popcornStatus_t popcornCos_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornGelu_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornLeakyRelu_f32(float* out, const float* in, float alpha, int64_t n, cudaStream_t stream);
 ```
@@ -177,6 +181,45 @@ popcornStatus_t popcornArgMin_f32(int64_t* out, const float* in, int64_t n, int6
 // LayerNorm: out = (in - mean) / sqrt(var + eps) * weight + bias
 // weight and bias are optional (pass NULL to skip)
 popcornStatus_t popcornLayerNorm_f32(float* out, const float* in, const float* weight, const float* bias, int64_t n, int64_t norm_size, float eps, cudaStream_t stream);
+```
+
+### Tensor Operations
+
+```c
+// Embedding lookup: out[i] = weight[indices[i]]
+popcornStatus_t popcornEmbedding_f32(float* out, const float* weight, const int64_t* indices, int64_t n, int64_t embed_dim, cudaStream_t stream);
+
+// Concatenate tensors along a dimension
+popcornStatus_t popcornCat_f32(float* out, const float* const* inputs, int64_t num_inputs, const int64_t* sizes, int64_t outer_size, int64_t inner_size, cudaStream_t stream);
+
+// Stack tensors along a new first dimension
+popcornStatus_t popcornStack_f32(float* out, const float* const* inputs, int64_t num_inputs, int64_t tensor_size, cudaStream_t stream);
+
+// Lower triangular mask (for causal attention)
+popcornStatus_t popcornTril_f32(float* out, const float* in, int64_t rows, int64_t cols, int64_t k, cudaStream_t stream);
+
+// Split tensor into multiple outputs (Cat backward)
+popcornStatus_t popcornSplit_f32(float* const* outputs, int64_t num_outputs, const int64_t* sizes, const float* in, int64_t outer_size, int64_t inner_size, cudaStream_t stream);
+
+// Unstack tensor into individual tensors (Stack backward)
+popcornStatus_t popcornUnstack_f32(float* const* outputs, const float* in, int64_t num_outputs, int64_t tensor_size, cudaStream_t stream);
+
+// Scatter: out[i * stride + idx[i]] = in[i]
+popcornStatus_t popcornScatter_f32(float* out, const float* in, const int64_t* idx, int64_t n, int64_t stride, cudaStream_t stream);
+
+// ScatterAdd: out[i * stride + idx[i]] += in[i] (for Gather backward)
+popcornStatus_t popcornScatterAdd_f32(float* out, const float* in, const int64_t* idx, int64_t n, int64_t stride, cudaStream_t stream);
+```
+
+### Backward Operations
+
+For autograd support:
+
+```c
+popcornStatus_t popcornGeluBackward_f32(float* grad_in, const float* grad_out, const float* in, int64_t n, cudaStream_t stream);
+popcornStatus_t popcornLeakyReluBackward_f32(float* grad_in, const float* grad_out, const float* in, float alpha, int64_t n, cudaStream_t stream);
+popcornStatus_t popcornLayerNormBackward_f32(float* grad_in, float* grad_weight, float* grad_bias, const float* grad_out, const float* in, const float* mean, const float* invstd, const float* weight, int64_t n, int64_t norm_size, cudaStream_t stream);
+popcornStatus_t popcornEmbeddingBackward_f32(float* grad_weight, const float* grad_out, const int64_t* indices, int64_t n, int64_t embed_dim, int64_t vocab_size, cudaStream_t stream);
 ```
 
 ## Contributing

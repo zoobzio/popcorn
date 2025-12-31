@@ -433,6 +433,77 @@ TEST(layernorm_inplace) {
     PASS();
 }
 
+TEST(layernorm_with_stats) {
+    // Test LayerNormWithStats outputs correct mean and invstd
+    float input[] = {1.0f, 2.0f, 3.0f, 4.0f};  // Single row
+    int n = 1;
+    int norm_size = 4;
+    float eps = 1e-5f;
+
+    // Expected statistics
+    float expected_mean = 2.5f;
+    float expected_var = 1.25f;
+    float expected_invstd = 1.0f / sqrtf(expected_var + eps);
+
+    float* d_in = to_device(input, n * norm_size);
+    float* d_out = device_alloc(n * norm_size);
+    float* d_mean = device_alloc(n);
+    float* d_invstd = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornLayerNormWithStats_f32(d_out, d_mean, d_invstd, d_in, nullptr, nullptr, n, norm_size, eps, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result_mean = to_host(d_mean, n);
+    float* result_invstd = to_host(d_invstd, n);
+
+    ASSERT_NEAR(result_mean[0], expected_mean, TOL);
+    ASSERT_NEAR(result_invstd[0], expected_invstd, TOL);
+
+    free(result_mean);
+    free(result_invstd);
+    cudaFree(d_in);
+    cudaFree(d_out);
+    cudaFree(d_mean);
+    cudaFree(d_invstd);
+    PASS();
+}
+
+TEST(argmax_parallel_large_stride) {
+    // Test parallel reduction for large strides (> 256)
+    int n = 100;
+    int stride = 1000;  // Large enough to trigger parallel kernel
+
+    float* input = (float*)malloc(n * stride * sizeof(float));
+    int64_t* expected = (int64_t*)malloc(n * sizeof(int64_t));
+
+    // Each row has max at position (i % stride)
+    for (int i = 0; i < n; i++) {
+        int max_pos = (i * 7) % stride;  // Vary position
+        for (int j = 0; j < stride; j++) {
+            input[i * stride + j] = (j == max_pos) ? 100.0f : (float)(j % 10);
+        }
+        expected[i] = max_pos;
+    }
+
+    float* d_in = to_device(input, n * stride);
+    int64_t* d_out = device_alloc_i64(n);
+
+    ASSERT_SUCCESS(popcornArgMax_f32(d_out, d_in, n, stride, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    int64_t* result = to_host_i64(d_out, n);
+    for (int i = 0; i < n; i++) {
+        ASSERT_EQ((int)result[i], (int)expected[i]);
+    }
+
+    free(input);
+    free(expected);
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_out);
+    PASS();
+}
+
 // -----------------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------------
@@ -446,12 +517,14 @@ int main() {
     RUN_TEST(argmax_basic);
     RUN_TEST(argmax_ties);
     RUN_TEST(argmax_large);
+    RUN_TEST(argmax_parallel_large_stride);
     RUN_TEST(argmin_basic);
     RUN_TEST(argmin_negative);
     RUN_TEST(layernorm_basic);
     RUN_TEST(layernorm_with_weight_bias);
     RUN_TEST(layernorm_large);
     RUN_TEST(layernorm_inplace);
+    RUN_TEST(layernorm_with_stats);
 
     return test_summary("Reduction");
 }

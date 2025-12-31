@@ -11,9 +11,9 @@ NVCC = nvcc
 NVCC_FLAGS = -std=c++17 -O3 --compiler-options -fPIC
 NVCC_FLAGS += -I$(CUDA_INCLUDE) -Iinclude -Isrc
 
-# Stricter warnings
-NVCC_FLAGS += --Wextra-cross-execution-space-call
-NVCC_FLAGS += --Wreorder
+# Stricter warnings (some flags may not be available in older CUDA versions)
+# NVCC_FLAGS += --Wextra-cross-execution-space-call
+# NVCC_FLAGS += --Wreorder
 NVCC_FLAGS += --compiler-options -Wall,-Wextra,-Wno-unused-parameter
 
 # Target architecture - adjust for your GPU
@@ -46,9 +46,16 @@ TEST_BINARIES = $(TEST_SOURCES:$(TEST_DIR)/%.cu=$(BUILD_DIR)/%)
 # Output
 TARGET = $(LIB_DIR)/libpopcorn.a
 
-.PHONY: all clean test tests fat info
+.PHONY: all clean test tests fat info debug
 
 all: $(TARGET)
+
+# Debug build with bounds checking enabled
+debug: NVCC_FLAGS += -DPOPCORN_DEBUG
+debug: clean $(TARGET)
+	@echo ""
+	@echo "Built debug library with bounds checking enabled"
+	@ls -lh $(TARGET)
 
 $(TARGET): $(OBJECTS) | $(LIB_DIR)
 	ar rcs $@ $^
@@ -77,7 +84,6 @@ $(FAT_BUILD_DIR):
 
 $(FAT_BUILD_DIR)/%.o: $(SRC_DIR)/%.cu | $(FAT_BUILD_DIR)
 	$(NVCC) -std=c++17 -O3 --compiler-options -fPIC -I$(CUDA_INCLUDE) -Iinclude -Isrc \
-		--Wextra-cross-execution-space-call --Wreorder \
 		--compiler-options -Wall,-Wextra,-Wno-unused-parameter \
 		$(FAT_ARCHS) -c $< -o $@
 

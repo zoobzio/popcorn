@@ -65,6 +65,14 @@ struct LeakyReluOp {
     }
 };
 
+struct SinOp {
+    __device__ float operator()(float x) const { return sinf(x); }
+};
+
+struct CosOp {
+    __device__ float operator()(float x) const { return cosf(x); }
+};
+
 // -----------------------------------------------------------------------------
 // C API Implementation
 // -----------------------------------------------------------------------------
@@ -82,6 +90,14 @@ const char* popcornGetErrorString(popcornStatus_t status) {
         default:
             return "unknown error";
     }
+}
+
+cudaError_t popcornGetLastCudaError(void) {
+    return __popcorn_last_cuda_error;
+}
+
+const char* popcornGetLastCudaErrorString(void) {
+    return cudaGetErrorString(__popcorn_last_cuda_error);
 }
 
 popcornStatus_t popcornNeg_f32(float* out, const float* in, int64_t n, cudaStream_t stream) {
@@ -153,6 +169,22 @@ popcornStatus_t popcornLeakyRelu_f32(float* out, const float* in, float alpha, i
     if (n <= 0) return POPCORN_SUCCESS;
 
     unaryKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(out, in, n, LeakyReluOp{alpha});
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSin_f32(float* out, const float* in, int64_t n, cudaStream_t stream) {
+    if (auto err = validatePtrs(out, in); err != POPCORN_SUCCESS) return err;
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    unaryKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(out, in, n, SinOp{});
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornCos_f32(float* out, const float* in, int64_t n, cudaStream_t stream) {
+    if (auto err = validatePtrs(out, in); err != POPCORN_SUCCESS) return err;
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    unaryKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(out, in, n, CosOp{});
     return checkCuda(cudaGetLastError());
 }
 

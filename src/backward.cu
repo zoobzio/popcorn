@@ -1,0 +1,529 @@
+#include "common.cuh"
+
+// -----------------------------------------------------------------------------
+// GELU Backward
+// -----------------------------------------------------------------------------
+
+// GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+// GELU'(x) = 0.5 * (1 + tanh(u)) + 0.5 * x * sech²(u) * sqrt(2/pi) * (1 + 3 * 0.044715 * x²)
+// where u = sqrt(2/pi) * (x + 0.044715 * x^3)
+
+__global__ void geluBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float x = in[i];
+        float x2 = x * x;
+        float x3 = x2 * x;
+
+        // u = sqrt(2/pi) * (x + 0.044715 * x^3)
+        float u = SQRT_2_OVER_PI * (x + GELU_COEF * x3);
+        float tanh_u = tanhf(u);
+
+        // sech²(u) = 1 - tanh²(u)
+        float sech2_u = 1.0f - tanh_u * tanh_u;
+
+        // derivative of u w.r.t. x: du/dx = sqrt(2/pi) * (1 + 3 * 0.044715 * x²)
+        float du_dx = SQRT_2_OVER_PI * (1.0f + 3.0f * GELU_COEF * x2);
+
+        // GELU'(x) = 0.5 * (1 + tanh(u)) + 0.5 * x * sech²(u) * du/dx
+        float gelu_grad = 0.5f * (1.0f + tanh_u) + 0.5f * x * sech2_u * du_dx;
+
+        grad_in[i] = grad_out[i] * gelu_grad;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LeakyReLU Backward
+// -----------------------------------------------------------------------------
+
+__global__ void leakyReluBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    float alpha,
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float x = in[i];
+        float grad = (x > 0.0f) ? 1.0f : alpha;
+        grad_in[i] = grad_out[i] * grad;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LayerNorm Backward
+// -----------------------------------------------------------------------------
+
+// LayerNorm forward: y = (x - mean) * invstd * weight + bias
+// This backward computes grad_input, grad_weight, grad_bias
+//
+// The math is complex - see https://arxiv.org/abs/1502.03167 and PyTorch implementation
+
+__global__ void layerNormBackwardKernel(
+    float* grad_in,           // [n, norm_size] output
+    float* grad_weight,       // [norm_size] output (can be null)
+    float* grad_bias,         // [norm_size] output (can be null)
+    const float* grad_out,    // [n, norm_size] input
+    const float* in,          // [n, norm_size] saved input
+    const float* mean,        // [n] saved mean
+    const float* invstd,      // [n] saved inverse std
+    const float* weight,      // [norm_size] weight (can be null)
+    int64_t n,
+    int64_t norm_size
+) {
+    // Each block handles one row (one instance in the batch)
+    int64_t row = blockIdx.x;
+    if (row >= n) return;
+
+    extern __shared__ float smem[];
+    float* s_sum1 = smem;                    // For sum of grad_out * (x - mean) * invstd
+    float* s_sum2 = smem + blockDim.x;       // For sum of grad_out * weight (if weight exists)
+
+    float row_mean = mean[row];
+    float row_invstd = invstd[row];
+
+    // First pass: compute sums needed for gradient
+    float local_sum1 = 0.0f;
+    float local_sum2 = 0.0f;
+
+    for (int64_t j = threadIdx.x; j < norm_size; j += blockDim.x) {
+        int64_t idx = row * norm_size + j;
+        float x_hat = (in[idx] - row_mean) * row_invstd;
+        float dy = grad_out[idx];
+        float w = (weight != nullptr) ? weight[j] : 1.0f;
+
+        local_sum1 += dy * w * x_hat;
+        local_sum2 += dy * w;
+    }
+
+    s_sum1[threadIdx.x] = local_sum1;
+    s_sum2[threadIdx.x] = local_sum2;
+    __syncthreads();
+
+    // Reduce within block
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            s_sum1[threadIdx.x] += s_sum1[threadIdx.x + s];
+            s_sum2[threadIdx.x] += s_sum2[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    float sum1 = s_sum1[0];  // sum of dy * w * x_hat
+    float sum2 = s_sum2[0];  // sum of dy * w
+
+    // Second pass: compute grad_input
+    float inv_norm_size = 1.0f / norm_size;
+
+    for (int64_t j = threadIdx.x; j < norm_size; j += blockDim.x) {
+        int64_t idx = row * norm_size + j;
+        float x_hat = (in[idx] - row_mean) * row_invstd;
+        float dy = grad_out[idx];
+        float w = (weight != nullptr) ? weight[j] : 1.0f;
+
+        // grad_input = invstd * (dy * w - mean(dy * w) - x_hat * mean(dy * w * x_hat))
+        float dx = row_invstd * (dy * w - sum2 * inv_norm_size - x_hat * sum1 * inv_norm_size);
+        grad_in[idx] = dx;
+
+        // Accumulate grad_weight and grad_bias (atomic since multiple rows contribute)
+        if (grad_weight != nullptr) {
+            atomicAdd(&grad_weight[j], dy * x_hat);
+        }
+        if (grad_bias != nullptr) {
+            atomicAdd(&grad_bias[j], dy);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Embedding Backward (Scatter-Add)
+// -----------------------------------------------------------------------------
+
+// Accumulates gradients back into the embedding table
+// grad_weight[indices[i]] += grad_out[i]
+
+__global__ void embeddingBackwardKernel(
+    float* grad_weight,       // [vocab_size, embed_dim] output
+    const float* grad_out,    // [n, embed_dim] input
+    const int64_t* indices,   // [n] indices
+    int64_t n,
+    int64_t embed_dim,
+    int64_t vocab_size
+) {
+    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t total = n * embed_dim;
+
+    if (idx < total) {
+        int64_t i = idx / embed_dim;  // which token
+        int64_t j = idx % embed_dim;  // which element
+        int64_t token_id = indices[i];
+        POPCORN_VALIDATE_INDEX(token_id, vocab_size);
+
+        atomicAdd(&grad_weight[token_id * embed_dim + j], grad_out[idx]);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Scatter
+// -----------------------------------------------------------------------------
+
+// Scatters values into output at specified indices
+// out[idx[i]] = in[i]  (or with atomicAdd for accumulation)
+
+__global__ void scatterKernel(
+    float* out,
+    const float* in,
+    const int64_t* idx,
+    int64_t n,
+    int64_t stride
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        int64_t index = idx[i];
+        POPCORN_VALIDATE_INDEX(index, stride);
+        int64_t out_idx = i * stride + index;
+        out[out_idx] = in[i];
+    }
+}
+
+__global__ void scatterAddKernel(
+    float* out,
+    const float* in,
+    const int64_t* idx,
+    int64_t n,
+    int64_t stride
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        int64_t index = idx[i];
+        POPCORN_VALIDATE_INDEX(index, stride);
+        int64_t out_idx = i * stride + index;
+        atomicAdd(&out[out_idx], in[i]);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Split (Cat Backward)
+// -----------------------------------------------------------------------------
+
+// Splits input tensor into multiple outputs along a dimension
+__global__ void splitKernel(
+    float* const* outputs,
+    const int64_t* offsets,
+    const float* in,
+    int64_t num_outputs,
+    int64_t outer_size,
+    int64_t total_split_size,
+    int64_t inner_size
+) {
+    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t total = outer_size * total_split_size * inner_size;
+
+    if (idx < total) {
+        // Decompose linear index
+        int64_t inner_idx = idx % inner_size;
+        int64_t temp = idx / inner_size;
+        int64_t split_idx = temp % total_split_size;
+        int64_t outer_idx = temp / total_split_size;
+
+        // Find which output tensor this belongs to
+        int64_t output_idx = 0;
+        for (int64_t i = 0; i < num_outputs; i++) {
+            if (split_idx < offsets[i + 1]) {
+                output_idx = i;
+                break;
+            }
+        }
+
+        // Calculate position within output tensor
+        int64_t local_split_idx = split_idx - offsets[output_idx];
+        int64_t output_split_size = offsets[output_idx + 1] - offsets[output_idx];
+        int64_t out_offset = outer_idx * output_split_size * inner_size +
+                             local_split_idx * inner_size +
+                             inner_idx;
+
+        outputs[output_idx][out_offset] = in[idx];
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unstack (Stack Backward)
+// -----------------------------------------------------------------------------
+
+// Splits stacked tensor back into individual tensors
+__global__ void unstackKernel(
+    float* const* outputs,
+    const float* in,
+    int64_t num_outputs,
+    int64_t tensor_size
+) {
+    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t total = num_outputs * tensor_size;
+
+    if (idx < total) {
+        int64_t output_idx = idx / tensor_size;
+        int64_t elem_idx = idx % tensor_size;
+        outputs[output_idx][elem_idx] = in[idx];
+    }
+}
+
+// -----------------------------------------------------------------------------
+// C API Implementation
+// -----------------------------------------------------------------------------
+
+extern "C" {
+
+popcornStatus_t popcornGeluBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    geluBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, in, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornLeakyReluBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    float alpha,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    leakyReluBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, in, alpha, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornLayerNormBackward_f32(
+    float* grad_in,
+    float* grad_weight,
+    float* grad_bias,
+    const float* grad_out,
+    const float* in,
+    const float* mean,
+    const float* invstd,
+    const float* weight,
+    int64_t n,
+    int64_t norm_size,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr ||
+        mean == nullptr || invstd == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0 || norm_size <= 0) return POPCORN_SUCCESS;
+
+    // Zero out grad_weight and grad_bias if provided (they accumulate)
+    if (grad_weight != nullptr) {
+        cudaMemsetAsync(grad_weight, 0, norm_size * sizeof(float), stream);
+    }
+    if (grad_bias != nullptr) {
+        cudaMemsetAsync(grad_bias, 0, norm_size * sizeof(float), stream);
+    }
+
+    // Use one block per row, shared memory for reductions
+    int threads = min((int)norm_size, 256);
+    // Round up to power of 2 for reduction
+    threads = 1 << (32 - __builtin_clz(threads - 1));
+    threads = max(32, min(threads, 256));
+
+    size_t smem_size = 2 * threads * sizeof(float);
+
+    layerNormBackwardKernel<<<n, threads, smem_size, stream>>>(
+        grad_in, grad_weight, grad_bias,
+        grad_out, in, mean, invstd, weight,
+        n, norm_size
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornEmbeddingBackward_f32(
+    float* grad_weight,
+    const float* grad_out,
+    const int64_t* indices,
+    int64_t n,
+    int64_t embed_dim,
+    int64_t vocab_size,
+    cudaStream_t stream
+) {
+    if (grad_weight == nullptr || grad_out == nullptr || indices == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0 || embed_dim <= 0) return POPCORN_SUCCESS;
+
+    // Zero out grad_weight first (accumulates with atomicAdd)
+    cudaMemsetAsync(grad_weight, 0, vocab_size * embed_dim * sizeof(float), stream);
+
+    int64_t total = n * embed_dim;
+    embeddingBackwardKernel<<<gridSize(total), BLOCK_SIZE, 0, stream>>>(
+        grad_weight, grad_out, indices, n, embed_dim, vocab_size
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornScatter_f32(
+    float* out,
+    const float* in,
+    const int64_t* idx,
+    int64_t n,
+    int64_t stride,
+    cudaStream_t stream
+) {
+    if (out == nullptr || in == nullptr || idx == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    scatterKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(out, in, idx, n, stride);
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornScatterAdd_f32(
+    float* out,
+    const float* in,
+    const int64_t* idx,
+    int64_t n,
+    int64_t stride,
+    cudaStream_t stream
+) {
+    if (out == nullptr || in == nullptr || idx == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    scatterAddKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(out, in, idx, n, stride);
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSplit_f32(
+    float* const* outputs,
+    int64_t num_outputs,
+    const int64_t* sizes,
+    const float* in,
+    int64_t outer_size,
+    int64_t inner_size,
+    cudaStream_t stream
+) {
+    if (outputs == nullptr || sizes == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (num_outputs <= 0 || outer_size <= 0 || inner_size <= 0) {
+        return POPCORN_SUCCESS;
+    }
+
+    // Calculate total split size and build offsets
+    int64_t total_split_size = 0;
+    for (int64_t i = 0; i < num_outputs; i++) {
+        total_split_size += sizes[i];
+    }
+
+    // Allocate device memory
+    float** d_outputs;
+    int64_t* d_offsets;
+
+    cudaError_t err = cudaMallocAsync(&d_outputs, num_outputs * sizeof(float*), stream);
+    if (err != cudaSuccess) return POPCORN_ERROR_CUDA;
+
+    err = cudaMallocAsync(&d_offsets, (num_outputs + 1) * sizeof(int64_t), stream);
+    if (err != cudaSuccess) {
+        cudaFreeAsync(d_outputs, stream);
+        return POPCORN_ERROR_CUDA;
+    }
+
+    // Build offsets
+    int64_t* h_offsets = new int64_t[num_outputs + 1];
+    h_offsets[0] = 0;
+    for (int64_t i = 0; i < num_outputs; i++) {
+        h_offsets[i + 1] = h_offsets[i] + sizes[i];
+    }
+
+    err = cudaMemcpyAsync(d_outputs, outputs, num_outputs * sizeof(float*),
+                          cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        delete[] h_offsets;
+        cudaFreeAsync(d_outputs, stream);
+        cudaFreeAsync(d_offsets, stream);
+        return POPCORN_ERROR_CUDA;
+    }
+
+    err = cudaMemcpyAsync(d_offsets, h_offsets, (num_outputs + 1) * sizeof(int64_t),
+                          cudaMemcpyHostToDevice, stream);
+    delete[] h_offsets;
+    if (err != cudaSuccess) {
+        cudaFreeAsync(d_outputs, stream);
+        cudaFreeAsync(d_offsets, stream);
+        return POPCORN_ERROR_CUDA;
+    }
+
+    int64_t total = outer_size * total_split_size * inner_size;
+    splitKernel<<<gridSize(total), BLOCK_SIZE, 0, stream>>>(
+        d_outputs, d_offsets, in, num_outputs, outer_size, total_split_size, inner_size
+    );
+
+    err = cudaGetLastError();
+    cudaFreeAsync(d_outputs, stream);
+    cudaFreeAsync(d_offsets, stream);
+
+    return checkCuda(err);
+}
+
+popcornStatus_t popcornUnstack_f32(
+    float* const* outputs,
+    const float* in,
+    int64_t num_outputs,
+    int64_t tensor_size,
+    cudaStream_t stream
+) {
+    if (outputs == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (num_outputs <= 0 || tensor_size <= 0) {
+        return POPCORN_SUCCESS;
+    }
+
+    // Allocate device memory for outputs array
+    float** d_outputs;
+    cudaError_t err = cudaMallocAsync(&d_outputs, num_outputs * sizeof(float*), stream);
+    if (err != cudaSuccess) return POPCORN_ERROR_CUDA;
+
+    err = cudaMemcpyAsync(d_outputs, outputs, num_outputs * sizeof(float*),
+                          cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        cudaFreeAsync(d_outputs, stream);
+        return POPCORN_ERROR_CUDA;
+    }
+
+    int64_t total = num_outputs * tensor_size;
+    unstackKernel<<<gridSize(total), BLOCK_SIZE, 0, stream>>>(
+        d_outputs, in, num_outputs, tensor_size
+    );
+
+    err = cudaGetLastError();
+    cudaFreeAsync(d_outputs, stream);
+
+    return checkCuda(err);
+}
+
+} // extern "C"
