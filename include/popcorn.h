@@ -289,6 +289,29 @@ popcornStatus_t popcornUnstack_f32(
     cudaStream_t stream
 );
 
+// -----------------------------------------------------------------------------
+// Optimizer Operations
+// -----------------------------------------------------------------------------
+
+// Fused AdamW optimizer step
+// Updates param, m, v in-place: param -= lr * (m_hat / (sqrt(v_hat) + eps) + wd * param)
+// Caller computes bias corrections: bc1 = 1 - beta1^t, bc2 = 1 - beta2^t
+popcornStatus_t popcornAdamW_f32(
+    float* param,             // [n] parameter tensor (updated in-place)
+    const float* grad,        // [n] gradient tensor
+    float* m,                 // [n] first moment (updated in-place)
+    float* v,                 // [n] second moment (updated in-place)
+    float lr,                 // learning rate
+    float beta1,              // first moment decay (typically 0.9)
+    float beta2,              // second moment decay (typically 0.999)
+    float epsilon,            // numerical stability (typically 1e-8)
+    float weight_decay,       // L2 penalty (typically 0.01)
+    float bias_correction1,   // 1 - beta1^t (precomputed by caller)
+    float bias_correction2,   // 1 - beta2^t (precomputed by caller)
+    int64_t n,                // number of elements
+    cudaStream_t stream
+);
+
 #ifdef __cplusplus
 }
 #endif

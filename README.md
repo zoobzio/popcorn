@@ -28,6 +28,7 @@ This library fills that gap with a clean C API designed for integration via cgo.
 | **Normalization** | `LayerNorm`                                                     |
 | **Tensor**        | `Embedding`, `Cat`, `Stack`, `Tril`, `Split`, `Unstack`         |
 | **Backward**      | `GeluBackward`, `LeakyReluBackward`, `LayerNormBackward`, `EmbeddingBackward` |
+| **Optimizer**     | `AdamW`                                                         |
 
 All operations support float32 and operate on contiguous memory. Broadcasting is handled at the consumer layer.
 
@@ -220,6 +221,30 @@ popcornStatus_t popcornGeluBackward_f32(float* grad_in, const float* grad_out, c
 popcornStatus_t popcornLeakyReluBackward_f32(float* grad_in, const float* grad_out, const float* in, float alpha, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornLayerNormBackward_f32(float* grad_in, float* grad_weight, float* grad_bias, const float* grad_out, const float* in, const float* mean, const float* invstd, const float* weight, int64_t n, int64_t norm_size, cudaStream_t stream);
 popcornStatus_t popcornEmbeddingBackward_f32(float* grad_weight, const float* grad_out, const int64_t* indices, int64_t n, int64_t embed_dim, int64_t vocab_size, cudaStream_t stream);
+```
+
+### Optimizer Operations
+
+Fused optimizer kernels for efficient parameter updates:
+
+```c
+// AdamW: fused update of param, m, v in a single kernel
+// Caller computes bias corrections: bc1 = 1 - beta1^t, bc2 = 1 - beta2^t
+popcornStatus_t popcornAdamW_f32(
+    float* param,             // [n] parameter tensor (updated in-place)
+    const float* grad,        // [n] gradient tensor
+    float* m,                 // [n] first moment (updated in-place)
+    float* v,                 // [n] second moment (updated in-place)
+    float lr,                 // learning rate
+    float beta1,              // first moment decay (typically 0.9)
+    float beta2,              // second moment decay (typically 0.999)
+    float epsilon,            // numerical stability (typically 1e-8)
+    float weight_decay,       // L2 penalty (typically 0.01)
+    float bias_correction1,   // 1 - beta1^t
+    float bias_correction2,   // 1 - beta2^t
+    int64_t n,                // number of elements
+    cudaStream_t stream
+);
 ```
 
 ## Contributing
