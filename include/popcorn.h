@@ -44,6 +44,7 @@ popcornStatus_t popcornCos_f32(float* out, const float* in, int64_t n, cudaStrea
 // Activations not covered by cuDNN
 popcornStatus_t popcornGelu_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 popcornStatus_t popcornLeakyRelu_f32(float* out, const float* in, float alpha, int64_t n, cudaStream_t stream);
+popcornStatus_t popcornSilu_f32(float* out, const float* in, int64_t n, cudaStream_t stream);
 
 // -----------------------------------------------------------------------------
 // Binary Elementwise Operations
@@ -140,6 +141,31 @@ popcornStatus_t popcornLayerNormWithStats_f32(
     const float* in,      // [n, norm_size] input
     const float* weight,  // [norm_size] scale (gamma), nullable for no scaling
     const float* bias,    // [norm_size] shift (beta), nullable for no shift
+    int64_t n,            // batch size
+    int64_t norm_size,    // size of normalized dimension(s)
+    float eps,            // epsilon for numerical stability
+    cudaStream_t stream
+);
+
+// Applies RMS normalization: out = in / rms(in) * weight
+// where rms(in) = sqrt(mean(in^2) + eps)
+popcornStatus_t popcornRMSNorm_f32(
+    float* out,           // [n, norm_size] output
+    const float* in,      // [n, norm_size] input
+    const float* weight,  // [norm_size] scale, nullable for no scaling
+    int64_t n,            // batch size
+    int64_t norm_size,    // size of normalized dimension(s)
+    float eps,            // epsilon for numerical stability (typically 1e-5)
+    cudaStream_t stream
+);
+
+// RMS normalization with statistics output for backward pass
+// Same as popcornRMSNorm_f32 but optionally outputs rrms (1/rms)
+popcornStatus_t popcornRMSNormWithStats_f32(
+    float* out,           // [n, norm_size] output
+    float* out_rrms,      // [n] reciprocal RMS per row (nullable to skip)
+    const float* in,      // [n, norm_size] input
+    const float* weight,  // [norm_size] scale, nullable for no scaling
     int64_t n,            // batch size
     int64_t norm_size,    // size of normalized dimension(s)
     float eps,            // epsilon for numerical stability
@@ -244,6 +270,122 @@ popcornStatus_t popcornEmbeddingBackward_f32(
     int64_t n,                // number of tokens
     int64_t embed_dim,        // embedding dimension
     int64_t vocab_size,       // vocabulary size
+    cudaStream_t stream
+);
+
+// ReLU backward: grad_in = grad_out * (in > 0 ? 1 : 0)
+popcornStatus_t popcornReluBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* in,          // [n] saved input from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// Sigmoid backward: grad_in = grad_out * out * (1 - out)
+popcornStatus_t popcornSigmoidBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* out,         // [n] sigmoid output from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// Tanh backward: grad_in = grad_out * (1 - out^2)
+popcornStatus_t popcornTanhBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* out,         // [n] tanh output from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// SiLU backward: grad_in = grad_out * (sigmoid(in) + in * sigmoid(in) * (1 - sigmoid(in)))
+popcornStatus_t popcornSiluBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* in,          // [n] saved input from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// Softmax backward: grad_in = out * (grad_out - sum(grad_out * out))
+popcornStatus_t popcornSoftmaxBackward_f32(
+    float* grad_in,           // [batch, dim] output gradient
+    const float* grad_out,    // [batch, dim] incoming gradient
+    const float* out,         // [batch, dim] softmax output from forward
+    int64_t batch,            // batch size
+    int64_t dim,              // softmax dimension
+    cudaStream_t stream
+);
+
+// CrossEntropy backward (fused softmax + NLL): grad_in = scale * (softmax - one_hot(target))
+popcornStatus_t popcornCrossEntropyBackward_f32(
+    float* grad_in,           // [batch, classes] output gradient w.r.t. logits
+    const float* softmax,     // [batch, classes] softmax output from forward
+    const int64_t* targets,   // [batch] target class indices
+    int64_t batch,            // batch size
+    int64_t classes,          // number of classes
+    float scale,              // 1/batch for mean reduction, 1 for sum
+    cudaStream_t stream
+);
+
+// Exp backward: grad_in = grad_out * out (where out = exp(in))
+popcornStatus_t popcornExpBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* out,         // [n] exp output from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// Log backward: grad_in = grad_out / in
+popcornStatus_t popcornLogBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* in,          // [n] saved input from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// Sqrt backward: grad_in = grad_out / (2 * out) (where out = sqrt(in))
+popcornStatus_t popcornSqrtBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* out,         // [n] sqrt output from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// Sin backward: grad_in = grad_out * cos(in)
+popcornStatus_t popcornSinBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* in,          // [n] saved input from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// Cos backward: grad_in = grad_out * -sin(in)
+popcornStatus_t popcornCosBackward_f32(
+    float* grad_in,           // [n] output gradient
+    const float* grad_out,    // [n] incoming gradient
+    const float* in,          // [n] saved input from forward
+    int64_t n,
+    cudaStream_t stream
+);
+
+// RMSNorm backward: computes grad_input and grad_weight
+// Requires saved rrms (1/rms) from forward pass
+popcornStatus_t popcornRMSNormBackward_f32(
+    float* grad_in,           // [n, norm_size] output gradient for input
+    float* grad_weight,       // [norm_size] output gradient for weight (nullable)
+    const float* grad_out,    // [n, norm_size] incoming gradient
+    const float* in,          // [n, norm_size] saved input from forward
+    const float* rrms,        // [n] saved 1/rms from forward
+    const float* weight,      // [norm_size] weight (nullable)
+    int64_t n,                // batch size
+    int64_t norm_size,        // normalization dimension size
     cudaStream_t stream
 );
 

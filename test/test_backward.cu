@@ -378,6 +378,558 @@ TEST(layer_norm_backward_basic) {
 }
 
 // -----------------------------------------------------------------------------
+// ReLU Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(relu_backward_basic) {
+    float in[] = {1.0f, -1.0f, 0.0f, 2.0f, -0.5f};
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    float expected[] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    int n = 5;
+
+    float* d_in = to_device(in, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornReluBackward_f32(d_grad_in, d_grad_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Sigmoid Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(sigmoid_backward_basic) {
+    // sigmoid output values
+    float out[] = {0.5f, 0.7310586f, 0.2689414f};  // sigmoid(0), sigmoid(1), sigmoid(-1)
+    float grad_out[] = {1.0f, 1.0f, 1.0f};
+    int n = 3;
+
+    // grad = out * (1 - out)
+    float expected[] = {0.25f, 0.19661193f, 0.19661193f};
+
+    float* d_out = to_device(out, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornSigmoidBackward_f32(d_grad_in, d_grad_out, d_out, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_out);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Tanh Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(tanh_backward_basic) {
+    // tanh output values
+    float out[] = {0.0f, 0.7615942f, -0.7615942f};  // tanh(0), tanh(1), tanh(-1)
+    float grad_out[] = {1.0f, 1.0f, 1.0f};
+    int n = 3;
+
+    // grad = 1 - out^2
+    float expected[] = {1.0f, 0.41997434f, 0.41997434f};
+
+    float* d_out = to_device(out, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornTanhBackward_f32(d_grad_in, d_grad_out, d_out, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_out);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// SiLU Backward Tests
+// -----------------------------------------------------------------------------
+
+static float silu_derivative(float x) {
+    float sigmoid = 1.0f / (1.0f + expf(-x));
+    return sigmoid + x * sigmoid * (1.0f - sigmoid);
+}
+
+TEST(silu_backward_basic) {
+    float in[] = {0.0f, 1.0f, -1.0f, 2.0f};
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f};
+    int n = 4;
+
+    float* d_in = to_device(in, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornSiluBackward_f32(d_grad_in, d_grad_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        float expected = silu_derivative(in[i]);
+        ASSERT_NEAR(result[i], expected, TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Softmax Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(softmax_backward_basic) {
+    // softmax output: [0.09, 0.24, 0.67] (approx for logits [0, 1, 2])
+    float out[] = {0.09003057f, 0.24472848f, 0.66524094f};
+    float grad_out[] = {1.0f, 0.0f, 0.0f};  // gradient only on first element
+    int batch = 1;
+    int dim = 3;
+
+    float* d_out = to_device(out, batch * dim);
+    float* d_grad_out = to_device(grad_out, batch * dim);
+    float* d_grad_in = device_alloc(batch * dim);
+
+    ASSERT_SUCCESS(popcornSoftmaxBackward_f32(d_grad_in, d_grad_out, d_out, batch, dim, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, batch * dim);
+
+    // Verify: grad_in = out * (grad_out - dot(grad_out, out))
+    // dot = 0.09003057 * 1 + 0 + 0 = 0.09003057
+    // grad_in[0] = 0.09003057 * (1 - 0.09003057) = 0.0819
+    // grad_in[1] = 0.24472848 * (0 - 0.09003057) = -0.0220
+    // grad_in[2] = 0.66524094 * (0 - 0.09003057) = -0.0599
+    float dot = out[0];
+    float expected[] = {
+        out[0] * (grad_out[0] - dot),
+        out[1] * (grad_out[1] - dot),
+        out[2] * (grad_out[2] - dot)
+    };
+
+    for (int i = 0; i < dim; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_out);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+TEST(softmax_backward_batch) {
+    // Test with batch > 1
+    float out[] = {
+        0.5f, 0.5f,       // row 0: uniform
+        0.9f, 0.1f        // row 1: peaked
+    };
+    float grad_out[] = {
+        1.0f, 0.0f,
+        1.0f, 0.0f
+    };
+    int batch = 2;
+    int dim = 2;
+
+    float* d_out = to_device(out, batch * dim);
+    float* d_grad_out = to_device(grad_out, batch * dim);
+    float* d_grad_in = device_alloc(batch * dim);
+
+    ASSERT_SUCCESS(popcornSoftmaxBackward_f32(d_grad_in, d_grad_out, d_out, batch, dim, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, batch * dim);
+
+    // Row 0: dot = 0.5, grad = [0.5*(1-0.5), 0.5*(0-0.5)] = [0.25, -0.25]
+    // Row 1: dot = 0.9, grad = [0.9*(1-0.9), 0.1*(0-0.9)] = [0.09, -0.09]
+    ASSERT_NEAR(result[0], 0.25f, TOL);
+    ASSERT_NEAR(result[1], -0.25f, TOL);
+    ASSERT_NEAR(result[2], 0.09f, TOL);
+    ASSERT_NEAR(result[3], -0.09f, TOL);
+
+    free(result);
+    cudaFree(d_out);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// CrossEntropy Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(cross_entropy_backward_basic) {
+    // softmax output and targets
+    float softmax[] = {
+        0.7f, 0.2f, 0.1f,   // batch 0
+        0.1f, 0.8f, 0.1f    // batch 1
+    };
+    int64_t targets[] = {0, 1};  // correct classes
+    int batch = 2;
+    int classes = 3;
+    float scale = 1.0f;
+
+    // Expected: grad = scale * (softmax - one_hot)
+    // batch 0, target=0: [0.7-1, 0.2-0, 0.1-0] = [-0.3, 0.2, 0.1]
+    // batch 1, target=1: [0.1-0, 0.8-1, 0.1-0] = [0.1, -0.2, 0.1]
+    float expected[] = {-0.3f, 0.2f, 0.1f, 0.1f, -0.2f, 0.1f};
+
+    float* d_softmax = to_device(softmax, batch * classes);
+    int64_t* d_targets = to_device_i64(targets, batch);
+    float* d_grad_in = device_alloc(batch * classes);
+
+    ASSERT_SUCCESS(popcornCrossEntropyBackward_f32(
+        d_grad_in, d_softmax, d_targets, batch, classes, scale, nullptr
+    ));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, batch * classes);
+    for (int i = 0; i < batch * classes; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_softmax);
+    cudaFree(d_targets);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+TEST(cross_entropy_backward_mean_reduction) {
+    // Test with mean reduction (scale = 1/batch)
+    float softmax[] = {0.9f, 0.1f, 0.2f, 0.8f};
+    int64_t targets[] = {0, 1};
+    int batch = 2;
+    int classes = 2;
+    float scale = 0.5f;  // 1/batch for mean
+
+    // batch 0: [0.9-1, 0.1-0] * 0.5 = [-0.05, 0.05]
+    // batch 1: [0.2-0, 0.8-1] * 0.5 = [0.1, -0.1]
+    float expected[] = {-0.05f, 0.05f, 0.1f, -0.1f};
+
+    float* d_softmax = to_device(softmax, batch * classes);
+    int64_t* d_targets = to_device_i64(targets, batch);
+    float* d_grad_in = device_alloc(batch * classes);
+
+    ASSERT_SUCCESS(popcornCrossEntropyBackward_f32(
+        d_grad_in, d_softmax, d_targets, batch, classes, scale, nullptr
+    ));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, batch * classes);
+    for (int i = 0; i < batch * classes; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_softmax);
+    cudaFree(d_targets);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Exp Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(exp_backward_basic) {
+    float in[] = {0.0f, 1.0f, -1.0f, 2.0f};
+    float out[4];  // exp(in)
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f};
+    int n = 4;
+
+    for (int i = 0; i < n; i++) {
+        out[i] = expf(in[i]);
+    }
+
+    float* d_out = to_device(out, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornExpBackward_f32(d_grad_in, d_grad_out, d_out, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        // grad = grad_out * exp(in) = grad_out * out
+        ASSERT_NEAR(result[i], out[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_out);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Log Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(log_backward_basic) {
+    float in[] = {1.0f, 2.0f, 0.5f, 10.0f};
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f};
+    int n = 4;
+
+    float* d_in = to_device(in, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornLogBackward_f32(d_grad_in, d_grad_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        // grad = grad_out / in
+        float expected = 1.0f / in[i];
+        ASSERT_NEAR(result[i], expected, TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Sqrt Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(sqrt_backward_basic) {
+    float in[] = {1.0f, 4.0f, 9.0f, 16.0f};
+    float out[4];  // sqrt(in)
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f};
+    int n = 4;
+
+    for (int i = 0; i < n; i++) {
+        out[i] = sqrtf(in[i]);
+    }
+
+    float* d_out = to_device(out, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornSqrtBackward_f32(d_grad_in, d_grad_out, d_out, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        // grad = grad_out / (2 * sqrt(in))
+        float expected = 1.0f / (2.0f * out[i]);
+        ASSERT_NEAR(result[i], expected, TOL);
+    }
+
+    free(result);
+    cudaFree(d_out);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Sin Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(sin_backward_basic) {
+    float in[] = {0.0f, 3.14159265f / 2.0f, 3.14159265f, -3.14159265f / 2.0f};
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f};
+    int n = 4;
+
+    float* d_in = to_device(in, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornSinBackward_f32(d_grad_in, d_grad_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        // grad = grad_out * cos(in)
+        float expected = cosf(in[i]);
+        ASSERT_NEAR(result[i], expected, TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// Cos Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(cos_backward_basic) {
+    float in[] = {0.0f, 3.14159265f / 2.0f, 3.14159265f, -3.14159265f / 2.0f};
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f};
+    int n = 4;
+
+    float* d_in = to_device(in, n);
+    float* d_grad_out = to_device(grad_out, n);
+    float* d_grad_in = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornCosBackward_f32(d_grad_in, d_grad_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_grad_in, n);
+    for (int i = 0; i < n; i++) {
+        // grad = grad_out * -sin(in)
+        float expected = -sinf(in[i]);
+        ASSERT_NEAR(result[i], expected, TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_grad_out);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
+// RMSNorm Backward Tests
+// -----------------------------------------------------------------------------
+
+TEST(rmsnorm_backward_basic) {
+    // Simple test: batch=2, norm_size=3
+    int n = 2;
+    int norm_size = 3;
+    float eps = 1e-5f;
+
+    float in[] = {1.0f, 2.0f, 3.0f, 2.0f, 2.0f, 2.0f};
+    float grad_out[] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    float weight[] = {1.0f, 1.0f, 1.0f};
+
+    // Compute rrms for each row
+    float ss0 = (1.0f + 4.0f + 9.0f) / 3.0f;
+    float ss1 = (4.0f + 4.0f + 4.0f) / 3.0f;
+    float rrms[] = {1.0f / sqrtf(ss0 + eps), 1.0f / sqrtf(ss1 + eps)};
+
+    float* d_in = to_device(in, n * norm_size);
+    float* d_grad_out = to_device(grad_out, n * norm_size);
+    float* d_weight = to_device(weight, norm_size);
+    float* d_rrms = to_device(rrms, n);
+    float* d_grad_in = device_alloc(n * norm_size);
+    float* d_grad_weight = device_alloc(norm_size);
+
+    ASSERT_SUCCESS(popcornRMSNormBackward_f32(
+        d_grad_in, d_grad_weight,
+        d_grad_out, d_in, d_rrms, d_weight,
+        n, norm_size, nullptr
+    ));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Gradient should exist and be finite
+    float* grad_in = to_host(d_grad_in, n * norm_size);
+    for (int i = 0; i < n * norm_size; i++) {
+        if (isnan(grad_in[i]) || isinf(grad_in[i])) {
+            printf("FAIL: grad_in[%d] is not finite\n", i);
+            return;
+        }
+    }
+
+    // grad_weight should also be finite
+    float* grad_weight = to_host(d_grad_weight, norm_size);
+    for (int i = 0; i < norm_size; i++) {
+        if (isnan(grad_weight[i]) || isinf(grad_weight[i])) {
+            printf("FAIL: grad_weight[%d] is not finite\n", i);
+            return;
+        }
+    }
+
+    free(grad_in);
+    free(grad_weight);
+    cudaFree(d_in);
+    cudaFree(d_grad_out);
+    cudaFree(d_weight);
+    cudaFree(d_rrms);
+    cudaFree(d_grad_in);
+    cudaFree(d_grad_weight);
+    PASS();
+}
+
+TEST(rmsnorm_backward_no_weight) {
+    // Test without weight
+    int n = 1;
+    int norm_size = 4;
+    float eps = 1e-5f;
+
+    float in[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float grad_out[] = {1.0f, 0.0f, 0.0f, 0.0f};
+
+    float ss = (1.0f + 4.0f + 9.0f + 16.0f) / 4.0f;
+    float rrms[] = {1.0f / sqrtf(ss + eps)};
+
+    float* d_in = to_device(in, n * norm_size);
+    float* d_grad_out = to_device(grad_out, n * norm_size);
+    float* d_rrms = to_device(rrms, n);
+    float* d_grad_in = device_alloc(n * norm_size);
+
+    ASSERT_SUCCESS(popcornRMSNormBackward_f32(
+        d_grad_in, nullptr,  // no grad_weight
+        d_grad_out, d_in, d_rrms, nullptr,  // no weight
+        n, norm_size, nullptr
+    ));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* grad_in = to_host(d_grad_in, n * norm_size);
+
+    // Verify finite
+    for (int i = 0; i < n * norm_size; i++) {
+        if (isnan(grad_in[i]) || isinf(grad_in[i])) {
+            printf("FAIL: grad_in[%d] is not finite\n", i);
+            return;
+        }
+    }
+
+    // For RMSNorm without weight and grad_out=[1,0,0,0]:
+    // c = mean(grad_out * in * 1) = mean([1,0,0,0]) = 0.25
+    // grad_in[0] = rrms * (1 - rrms^2 * 1 * c) = rrms * (1 - rrms^2 * 0.25)
+    // grad_in[1..3] = rrms * (0 - rrms^2 * x[i] * c)
+    float r = rrms[0];
+    float c = (1.0f * in[0]) / 4.0f;
+    float expected0 = r * (1.0f - r * r * in[0] * c);
+    ASSERT_NEAR(grad_in[0], expected0, TOL);
+
+    free(grad_in);
+    cudaFree(d_in);
+    cudaFree(d_grad_out);
+    cudaFree(d_rrms);
+    cudaFree(d_grad_in);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------------
 
@@ -394,6 +946,21 @@ int main() {
     RUN_TEST(split_basic);
     RUN_TEST(unstack_basic);
     RUN_TEST(layer_norm_backward_basic);
+    RUN_TEST(relu_backward_basic);
+    RUN_TEST(sigmoid_backward_basic);
+    RUN_TEST(tanh_backward_basic);
+    RUN_TEST(silu_backward_basic);
+    RUN_TEST(softmax_backward_basic);
+    RUN_TEST(softmax_backward_batch);
+    RUN_TEST(cross_entropy_backward_basic);
+    RUN_TEST(cross_entropy_backward_mean_reduction);
+    RUN_TEST(exp_backward_basic);
+    RUN_TEST(log_backward_basic);
+    RUN_TEST(sqrt_backward_basic);
+    RUN_TEST(sin_backward_basic);
+    RUN_TEST(cos_backward_basic);
+    RUN_TEST(rmsnorm_backward_basic);
+    RUN_TEST(rmsnorm_backward_no_weight);
 
     return test_summary("Backward");
 }

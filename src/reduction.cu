@@ -282,6 +282,91 @@ __global__ void layerNormWithStatsKernel(
 }
 
 // -----------------------------------------------------------------------------
+// RMSNorm Kernel
+// Single pass: compute RMS and normalize
+// One thread per row (batch element)
+// -----------------------------------------------------------------------------
+
+__global__ void rmsNormKernel(
+    float* out,
+    const float* in,
+    const float* weight,
+    int64_t n,
+    int64_t norm_size,
+    float eps
+) {
+    int64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < n) {
+        const float* row_in = in + row * norm_size;
+        float* row_out = out + row * norm_size;
+
+        // Compute sum of squares
+        float sum_sq = 0.0f;
+        for (int64_t j = 0; j < norm_size; j++) {
+            sum_sq += row_in[j] * row_in[j];
+        }
+
+        // RMS = sqrt(mean(x^2) + eps)
+        float rms = sqrtf(sum_sq / static_cast<float>(norm_size) + eps);
+        float inv_rms = 1.0f / rms;
+
+        // Normalize and apply weight
+        for (int64_t j = 0; j < norm_size; j++) {
+            float normalized = row_in[j] * inv_rms;
+            if (weight != nullptr) {
+                normalized *= weight[j];
+            }
+            row_out[j] = normalized;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// RMSNorm Kernel with Statistics Output
+// Same as rmsNormKernel but outputs rrms (1/rms) for backward pass
+// -----------------------------------------------------------------------------
+
+__global__ void rmsNormWithStatsKernel(
+    float* out,
+    float* out_rrms,
+    const float* in,
+    const float* weight,
+    int64_t n,
+    int64_t norm_size,
+    float eps
+) {
+    int64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < n) {
+        const float* row_in = in + row * norm_size;
+        float* row_out = out + row * norm_size;
+
+        // Compute sum of squares
+        float sum_sq = 0.0f;
+        for (int64_t j = 0; j < norm_size; j++) {
+            sum_sq += row_in[j] * row_in[j];
+        }
+
+        // RMS = sqrt(mean(x^2) + eps)
+        float rms = sqrtf(sum_sq / static_cast<float>(norm_size) + eps);
+        float inv_rms = 1.0f / rms;
+
+        // Save rrms for backward
+        if (out_rrms != nullptr) {
+            out_rrms[row] = inv_rms;
+        }
+
+        // Normalize and apply weight
+        for (int64_t j = 0; j < norm_size; j++) {
+            float normalized = row_in[j] * inv_rms;
+            if (weight != nullptr) {
+                normalized *= weight[j];
+            }
+            row_out[j] = normalized;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // C API Implementation
 // -----------------------------------------------------------------------------
 
@@ -385,6 +470,47 @@ popcornStatus_t popcornLayerNormWithStats_f32(
 
     layerNormWithStatsKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
         out, out_mean, out_invstd, in, weight, bias, n, norm_size, eps
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornRMSNorm_f32(
+    float* out,
+    const float* in,
+    const float* weight,
+    int64_t n,
+    int64_t norm_size,
+    float eps,
+    cudaStream_t stream
+) {
+    if (auto err = validatePtrs(out, in); err != POPCORN_SUCCESS) return err;
+    // weight is nullable
+    if (n <= 0) return POPCORN_SUCCESS;
+    if (norm_size <= 0) return POPCORN_ERROR_INVALID_VALUE;
+
+    rmsNormKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        out, in, weight, n, norm_size, eps
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornRMSNormWithStats_f32(
+    float* out,
+    float* out_rrms,
+    const float* in,
+    const float* weight,
+    int64_t n,
+    int64_t norm_size,
+    float eps,
+    cudaStream_t stream
+) {
+    if (auto err = validatePtrs(out, in); err != POPCORN_SUCCESS) return err;
+    // weight and out_rrms are nullable
+    if (n <= 0) return POPCORN_SUCCESS;
+    if (norm_size <= 0) return POPCORN_ERROR_INVALID_VALUE;
+
+    rmsNormWithStatsKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        out, out_rrms, in, weight, n, norm_size, eps
     );
     return checkCuda(cudaGetLastError());
 }

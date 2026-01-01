@@ -505,6 +505,108 @@ TEST(argmax_parallel_large_stride) {
 }
 
 // -----------------------------------------------------------------------------
+// RMSNorm
+// -----------------------------------------------------------------------------
+
+TEST(rmsnorm_basic) {
+    // 2 rows, 4 columns
+    float input[] = {
+        1.0f, 2.0f, 3.0f, 4.0f,
+        2.0f, 2.0f, 2.0f, 2.0f
+    };
+    int n = 2;
+    int norm_size = 4;
+    float eps = 1e-5f;
+
+    // RMS for row 0: sqrt(mean([1,4,9,16])) = sqrt(7.5) = 2.7386
+    // RMS for row 1: sqrt(mean([4,4,4,4])) = sqrt(4) = 2
+    float rms0 = sqrtf((1.0f + 4.0f + 9.0f + 16.0f) / 4.0f + eps);
+    float rms1 = sqrtf((4.0f + 4.0f + 4.0f + 4.0f) / 4.0f + eps);
+
+    float expected[] = {
+        1.0f / rms0, 2.0f / rms0, 3.0f / rms0, 4.0f / rms0,
+        2.0f / rms1, 2.0f / rms1, 2.0f / rms1, 2.0f / rms1
+    };
+
+    float* d_in = to_device(input, n * norm_size);
+    float* d_out = device_alloc(n * norm_size);
+
+    ASSERT_SUCCESS(popcornRMSNorm_f32(d_out, d_in, nullptr, n, norm_size, eps, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_out, n * norm_size);
+    for (int i = 0; i < n * norm_size; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_out);
+    PASS();
+}
+
+TEST(rmsnorm_with_weight) {
+    float input[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float weight[] = {0.5f, 1.0f, 1.5f, 2.0f};
+    int n = 1;
+    int norm_size = 4;
+    float eps = 1e-5f;
+
+    float rms = sqrtf((1.0f + 4.0f + 9.0f + 16.0f) / 4.0f + eps);
+
+    float expected[] = {
+        (1.0f / rms) * 0.5f,
+        (2.0f / rms) * 1.0f,
+        (3.0f / rms) * 1.5f,
+        (4.0f / rms) * 2.0f
+    };
+
+    float* d_in = to_device(input, n * norm_size);
+    float* d_weight = to_device(weight, norm_size);
+    float* d_out = device_alloc(n * norm_size);
+
+    ASSERT_SUCCESS(popcornRMSNorm_f32(d_out, d_in, d_weight, n, norm_size, eps, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_out, n * norm_size);
+    for (int i = 0; i < n * norm_size; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_weight);
+    cudaFree(d_out);
+    PASS();
+}
+
+TEST(rmsnorm_with_stats) {
+    float input[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    int n = 1;
+    int norm_size = 4;
+    float eps = 1e-5f;
+
+    float expected_rms = sqrtf((1.0f + 4.0f + 9.0f + 16.0f) / 4.0f + eps);
+    float expected_rrms = 1.0f / expected_rms;
+
+    float* d_in = to_device(input, n * norm_size);
+    float* d_out = device_alloc(n * norm_size);
+    float* d_rrms = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornRMSNormWithStats_f32(d_out, d_rrms, d_in, nullptr, n, norm_size, eps, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result_rrms = to_host(d_rrms, n);
+    ASSERT_NEAR(result_rrms[0], expected_rrms, TOL);
+
+    free(result_rrms);
+    cudaFree(d_in);
+    cudaFree(d_out);
+    cudaFree(d_rrms);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------------
 
@@ -525,6 +627,9 @@ int main() {
     RUN_TEST(layernorm_large);
     RUN_TEST(layernorm_inplace);
     RUN_TEST(layernorm_with_stats);
+    RUN_TEST(rmsnorm_basic);
+    RUN_TEST(rmsnorm_with_weight);
+    RUN_TEST(rmsnorm_with_stats);
 
     return test_summary("Reduction");
 }

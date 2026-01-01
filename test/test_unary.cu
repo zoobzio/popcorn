@@ -350,6 +350,38 @@ TEST(cos_basic) {
 }
 
 // -----------------------------------------------------------------------------
+// SiLU
+// -----------------------------------------------------------------------------
+
+TEST(silu_basic) {
+    // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
+    float input[] = {0.0f, 1.0f, -1.0f, 2.0f, -2.0f};
+    int n = 5;
+
+    float expected[5];
+    for (int i = 0; i < n; i++) {
+        float x = input[i];
+        expected[i] = x / (1.0f + expf(-x));
+    }
+
+    float* d_in = to_device(input, n);
+    float* d_out = device_alloc(n);
+
+    ASSERT_SUCCESS(popcornSilu_f32(d_out, d_in, n, nullptr));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float* result = to_host(d_out, n);
+    for (int i = 0; i < n; i++) {
+        ASSERT_NEAR(result[i], expected[i], TOL);
+    }
+
+    free(result);
+    cudaFree(d_in);
+    cudaFree(d_out);
+    PASS();
+}
+
+// -----------------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------------
 
@@ -366,6 +398,7 @@ int main() {
     RUN_TEST(sign_basic);
     RUN_TEST(gelu_basic);
     RUN_TEST(leaky_relu_basic);
+    RUN_TEST(silu_basic);
     RUN_TEST(exp_large);
     RUN_TEST(neg_inplace);
     RUN_TEST(sin_basic);

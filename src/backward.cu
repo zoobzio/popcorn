@@ -170,6 +170,292 @@ __global__ void embeddingBackwardKernel(
 }
 
 // -----------------------------------------------------------------------------
+// ReLU Backward
+// -----------------------------------------------------------------------------
+
+__global__ void reluBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        grad_in[i] = (in[i] > 0.0f) ? grad_out[i] : 0.0f;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sigmoid Backward
+// -----------------------------------------------------------------------------
+
+__global__ void sigmoidBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,  // sigmoid output from forward
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float s = out[i];
+        grad_in[i] = grad_out[i] * s * (1.0f - s);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tanh Backward
+// -----------------------------------------------------------------------------
+
+__global__ void tanhBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,  // tanh output from forward
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float t = out[i];
+        grad_in[i] = grad_out[i] * (1.0f - t * t);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// SiLU Backward
+// -----------------------------------------------------------------------------
+
+__global__ void siluBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float x = in[i];
+        float sigmoid = 1.0f / (1.0f + expf(-x));
+        // d/dx[x * sigmoid(x)] = sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x))
+        grad_in[i] = grad_out[i] * (sigmoid + x * sigmoid * (1.0f - sigmoid));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Softmax Backward
+// -----------------------------------------------------------------------------
+
+__global__ void softmaxBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,  // softmax output from forward
+    int64_t batch,
+    int64_t dim
+) {
+    int64_t row = blockIdx.x;
+    if (row >= batch) return;
+
+    extern __shared__ float smem[];
+
+    const float* row_out = out + row * dim;
+    const float* row_grad_out = grad_out + row * dim;
+    float* row_grad_in = grad_in + row * dim;
+
+    // Compute dot = sum(grad_out * out) for this row
+    float local_dot = 0.0f;
+    for (int64_t j = threadIdx.x; j < dim; j += blockDim.x) {
+        local_dot += row_grad_out[j] * row_out[j];
+    }
+
+    smem[threadIdx.x] = local_dot;
+    __syncthreads();
+
+    // Reduce within block
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            smem[threadIdx.x] += smem[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    float dot = smem[0];
+
+    // grad_in = out * (grad_out - dot)
+    for (int64_t j = threadIdx.x; j < dim; j += blockDim.x) {
+        row_grad_in[j] = row_out[j] * (row_grad_out[j] - dot);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Exp Backward
+// -----------------------------------------------------------------------------
+
+__global__ void expBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,  // exp(input) from forward
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        grad_in[i] = grad_out[i] * out[i];
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Log Backward
+// -----------------------------------------------------------------------------
+
+__global__ void logBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        grad_in[i] = grad_out[i] / in[i];
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sqrt Backward
+// -----------------------------------------------------------------------------
+
+__global__ void sqrtBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,  // sqrt(input) from forward
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        grad_in[i] = grad_out[i] / (2.0f * out[i]);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sin Backward
+// -----------------------------------------------------------------------------
+
+__global__ void sinBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        grad_in[i] = grad_out[i] * cosf(in[i]);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Cos Backward
+// -----------------------------------------------------------------------------
+
+__global__ void cosBackwardKernel(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n
+) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        grad_in[i] = grad_out[i] * -sinf(in[i]);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// RMSNorm Backward
+// -----------------------------------------------------------------------------
+
+// RMSNorm: y = x * rrms * weight, where rrms = 1/sqrt(mean(x^2) + eps)
+// grad_input = rrms * (weight * grad_out - rrms^2 * x * mean(grad_out * x * weight))
+// grad_weight = sum over batch of (grad_out * x * rrms)
+
+__global__ void rmsNormBackwardKernel(
+    float* grad_in,           // [n, norm_size] output
+    float* grad_weight,       // [norm_size] output (can be null)
+    const float* grad_out,    // [n, norm_size] input
+    const float* in,          // [n, norm_size] saved input
+    const float* rrms,        // [n] saved 1/rms
+    const float* weight,      // [norm_size] weight (can be null)
+    int64_t n,
+    int64_t norm_size
+) {
+    // Each block handles one row (one instance in the batch)
+    int64_t row = blockIdx.x;
+    if (row >= n) return;
+
+    extern __shared__ float smem[];
+
+    float row_rrms = rrms[row];
+    float row_rrms2 = row_rrms * row_rrms;
+
+    // First pass: compute c = mean(grad_out * x * weight)
+    float local_sum = 0.0f;
+    for (int64_t j = threadIdx.x; j < norm_size; j += blockDim.x) {
+        int64_t idx = row * norm_size + j;
+        float w = (weight != nullptr) ? weight[j] : 1.0f;
+        local_sum += grad_out[idx] * in[idx] * w;
+    }
+
+    smem[threadIdx.x] = local_sum;
+    __syncthreads();
+
+    // Reduce within block
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            smem[threadIdx.x] += smem[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    float c = smem[0] / static_cast<float>(norm_size);
+
+    // Second pass: compute grad_input and accumulate grad_weight
+    for (int64_t j = threadIdx.x; j < norm_size; j += blockDim.x) {
+        int64_t idx = row * norm_size + j;
+        float x = in[idx];
+        float dy = grad_out[idx];
+        float w = (weight != nullptr) ? weight[j] : 1.0f;
+
+        // grad_input = rrms * (w * dy - rrms^2 * x * c)
+        float dx = row_rrms * (w * dy - row_rrms2 * x * c);
+        grad_in[idx] = dx;
+
+        // grad_weight[j] += dy * x * rrms (atomic since multiple rows contribute)
+        if (grad_weight != nullptr) {
+            atomicAdd(&grad_weight[j], dy * x * row_rrms);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// CrossEntropy Backward (fused softmax + NLL)
+// -----------------------------------------------------------------------------
+
+__global__ void crossEntropyBackwardKernel(
+    float* grad_in,
+    const float* softmax,
+    const int64_t* targets,
+    int64_t batch,
+    int64_t classes,
+    float scale
+) {
+    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t total = batch * classes;
+
+    if (idx < total) {
+        int64_t b = idx / classes;
+        int64_t c = idx % classes;
+        int64_t target = targets[b];
+
+        // grad = scale * (softmax - one_hot(target))
+        float one_hot = (c == target) ? 1.0f : 0.0f;
+        grad_in[idx] = scale * (softmax[idx] - one_hot);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Scatter
 // -----------------------------------------------------------------------------
 
@@ -379,6 +665,249 @@ popcornStatus_t popcornEmbeddingBackward_f32(
     int64_t total = n * embed_dim;
     embeddingBackwardKernel<<<gridSize(total), BLOCK_SIZE, 0, stream>>>(
         grad_weight, grad_out, indices, n, embed_dim, vocab_size
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornReluBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    reluBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, in, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSigmoidBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || out == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    sigmoidBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, out, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornTanhBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || out == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    tanhBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, out, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSiluBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    siluBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, in, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSoftmaxBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,
+    int64_t batch,
+    int64_t dim,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || out == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (batch <= 0 || dim <= 0) return POPCORN_SUCCESS;
+
+    // One block per row, shared memory for reduction
+    int threads = min((int)dim, 256);
+    threads = 1 << (32 - __builtin_clz(threads - 1));
+    threads = max(32, min(threads, 256));
+
+    size_t smem_size = threads * sizeof(float);
+
+    softmaxBackwardKernel<<<batch, threads, smem_size, stream>>>(
+        grad_in, grad_out, out, batch, dim
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornCrossEntropyBackward_f32(
+    float* grad_in,
+    const float* softmax,
+    const int64_t* targets,
+    int64_t batch,
+    int64_t classes,
+    float scale,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || softmax == nullptr || targets == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (batch <= 0 || classes <= 0) return POPCORN_SUCCESS;
+
+    int64_t total = batch * classes;
+    crossEntropyBackwardKernel<<<gridSize(total), BLOCK_SIZE, 0, stream>>>(
+        grad_in, softmax, targets, batch, classes, scale
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornExpBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || out == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    expBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, out, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornLogBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    logBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, in, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSqrtBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* out,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || out == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    sqrtBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, out, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSinBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    sinBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, in, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornCosBackward_f32(
+    float* grad_in,
+    const float* grad_out,
+    const float* in,
+    int64_t n,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    cosBackwardKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(
+        grad_in, grad_out, in, n
+    );
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornRMSNormBackward_f32(
+    float* grad_in,
+    float* grad_weight,
+    const float* grad_out,
+    const float* in,
+    const float* rrms,
+    const float* weight,
+    int64_t n,
+    int64_t norm_size,
+    cudaStream_t stream
+) {
+    if (grad_in == nullptr || grad_out == nullptr || in == nullptr || rrms == nullptr) {
+        return POPCORN_ERROR_INVALID_VALUE;
+    }
+    if (n <= 0 || norm_size <= 0) return POPCORN_SUCCESS;
+
+    // Zero out grad_weight if provided (it accumulates)
+    if (grad_weight != nullptr) {
+        cudaMemsetAsync(grad_weight, 0, norm_size * sizeof(float), stream);
+    }
+
+    // Use one block per row, shared memory for reductions
+    int threads = min((int)norm_size, 256);
+    threads = 1 << (32 - __builtin_clz(threads - 1));
+    threads = max(32, min(threads, 256));
+
+    size_t smem_size = threads * sizeof(float);
+
+    rmsNormBackwardKernel<<<n, threads, smem_size, stream>>>(
+        grad_in, grad_weight, grad_out, in, rrms, weight, n, norm_size
     );
     return checkCuda(cudaGetLastError());
 }

@@ -73,6 +73,13 @@ struct CosOp {
     __device__ float operator()(float x) const { return cosf(x); }
 };
 
+struct SiluOp {
+    __device__ float operator()(float x) const {
+        // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
+        return x / (1.0f + expf(-x));
+    }
+};
+
 // -----------------------------------------------------------------------------
 // C API Implementation
 // -----------------------------------------------------------------------------
@@ -185,6 +192,14 @@ popcornStatus_t popcornCos_f32(float* out, const float* in, int64_t n, cudaStrea
     if (n <= 0) return POPCORN_SUCCESS;
 
     unaryKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(out, in, n, CosOp{});
+    return checkCuda(cudaGetLastError());
+}
+
+popcornStatus_t popcornSilu_f32(float* out, const float* in, int64_t n, cudaStream_t stream) {
+    if (auto err = validatePtrs(out, in); err != POPCORN_SUCCESS) return err;
+    if (n <= 0) return POPCORN_SUCCESS;
+
+    unaryKernel<<<gridSize(n), BLOCK_SIZE, 0, stream>>>(out, in, n, SiluOp{});
     return checkCuda(cudaGetLastError());
 }
 
