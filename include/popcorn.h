@@ -454,6 +454,112 @@ popcornStatus_t popcornAdamW_f32(
     cudaStream_t stream
 );
 
+// -----------------------------------------------------------------------------
+// Quantized MatMul Operations
+// Fused dequantize + matmul for weight-only quantized inference
+// -----------------------------------------------------------------------------
+
+// INT8 per-channel: out = x @ dequantize(qweight).T
+// dequantize(qweight)[i,j] = qweight[i,j] * scale[i]
+popcornStatus_t popcornDequantizeMatmul_i8f32(
+    float* out,               // [M, N] output
+    const float* x,           // [M, K] activations
+    const int8_t* qweight,    // [N, K] quantized weights
+    const float* scale,       // [N] per-channel scales
+    int64_t M,                // rows of x (batch * seq)
+    int64_t N,                // rows of qweight (out_features)
+    int64_t K,                // cols of x and qweight (in_features)
+    cudaStream_t stream
+);
+
+// INT8 per-group: finer-grained scales for better accuracy
+// dequantize(qweight)[i,j] = qweight[i,j] * scale[i, j/group_size]
+popcornStatus_t popcornDequantizeMatmulGrouped_i8f32(
+    float* out,               // [M, N] output
+    const float* x,           // [M, K] activations
+    const int8_t* qweight,    // [N, K] quantized weights
+    const float* scale,       // [N, num_groups] per-group scales
+    int64_t M,                // rows of x
+    int64_t N,                // rows of qweight (out_features)
+    int64_t K,                // cols (in_features)
+    int64_t group_size,       // elements per group (must divide K evenly)
+    cudaStream_t stream
+);
+
+// INT8 batched: for multi-head attention projections
+// Weights shared across batch dimension
+popcornStatus_t popcornDequantizeMatmulBatched_i8f32(
+    float* out,               // [B, M, N] output
+    const float* x,           // [B, M, K] activations
+    const int8_t* qweight,    // [N, K] quantized weights (shared)
+    const float* scale,       // [N] scales
+    int64_t B,                // batch size
+    int64_t M,                // rows per batch
+    int64_t N,                // out_features
+    int64_t K,                // in_features
+    cudaStream_t stream
+);
+
+// INT4 per-group with zero points (asymmetric quantization)
+// Packed format: 2 int4 values per byte (low nibble first)
+// dequantize(qweight)[i,j] = (qweight[i,j] - zero[i,g]) * scale[i,g]
+popcornStatus_t popcornDequantizeMatmulGrouped_i4f32(
+    float* out,               // [M, N] output
+    const float* x,           // [M, K] activations
+    const uint8_t* qweight,   // [N, K/2] packed int4 weights
+    const float* scale,       // [N, num_groups] per-group scales
+    const float* zero,        // [N, num_groups] per-group zero points
+    int64_t M,                // rows of x
+    int64_t N,                // rows of qweight (out_features)
+    int64_t K,                // cols (in_features, must be even)
+    int64_t group_size,       // elements per group (must divide K evenly)
+    cudaStream_t stream
+);
+
+// -----------------------------------------------------------------------------
+// Quantization Operations (float32 -> int8/int4)
+// Convert floating point weights to quantized format
+// -----------------------------------------------------------------------------
+
+// INT8 per-channel: symmetric quantization
+// scale[i] = max_abs(input[i,:]) / 127
+// out[i,j] = round(input[i,j] / scale[i]), clamped to [-128, 127]
+popcornStatus_t popcornQuantize_f32i8(
+    int8_t* out,              // [N, K] quantized output
+    float* scale,             // [N] per-channel scales
+    const float* input,       // [N, K] float input
+    int64_t N,                // rows (out_features)
+    int64_t K,                // cols (in_features)
+    cudaStream_t stream
+);
+
+// INT8 per-group: symmetric quantization with finer granularity
+// scale[i,g] = max_abs(input[i, g*group_size:(g+1)*group_size]) / 127
+popcornStatus_t popcornQuantizeGrouped_f32i8(
+    int8_t* out,              // [N, K] quantized output
+    float* scale,             // [N, num_groups] per-group scales
+    const float* input,       // [N, K] float input
+    int64_t N,                // rows (out_features)
+    int64_t K,                // cols (in_features)
+    int64_t group_size,       // elements per group (must divide K evenly)
+    cudaStream_t stream
+);
+
+// INT4 per-group: asymmetric quantization with zero points
+// Packed format: 2 int4 values per byte (low nibble first)
+// scale[i,g] = (max - min) / 15, zero[i,g] = -min / scale
+// out = pack(round(input / scale + zero)), clamped to [0, 15]
+popcornStatus_t popcornQuantizeGrouped_f32i4(
+    uint8_t* out,             // [N, K/2] packed int4 output
+    float* scale,             // [N, num_groups] per-group scales
+    float* zero,              // [N, num_groups] per-group zero points
+    const float* input,       // [N, K] float input
+    int64_t N,                // rows (out_features)
+    int64_t K,                // cols (in_features, must be even)
+    int64_t group_size,       // elements per group (must divide K evenly)
+    cudaStream_t stream
+);
+
 #ifdef __cplusplus
 }
 #endif
